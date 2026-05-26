@@ -37,5 +37,15 @@ services:
       - mission-control-backend
     restart: always
 
+  scheduler:
+    build: ./scripts/python
+    env_file: .env
+    environment:
+      - SCHEDULER_TIMEZONE=${SCHEDULER_TIMEZONE:-UTC}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: always
+
 volumes:
   postgres_data:

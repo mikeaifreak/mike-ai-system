@@ -2,13 +2,14 @@
 main.py — Finance Controller AI System orchestrator.
 
 Usage:
-    python main.py                        # full morning pipeline (default)
-    python main.py --mode morning_report  # fetch + process + Slack report
-    python main.py --mode sync_only       # fetch + process, no alerts
-    python main.py --mode eod_report      # WhatsApp EOD summary
-    python main.py --mode reconcile       # sheet vs DB row-count check
+    python main.py                          # full morning pipeline (default)
+    python main.py --mode morning_report    # fetch + process + Slack report
+    python main.py --mode sync_only         # fetch + process, no alerts
+    python main.py --mode read_invoices     # lightweight invoice/sheet sync (no notifications)
+    python main.py --mode eod_report        # WhatsApp EOD summary
+    python main.py --mode reconcile         # sheet vs DB row-count check
 
-MODE can also be set via the MODE environment variable (for n8n / cron).
+MODE can also be set via the MODE environment variable.
 """
 
 import argparse
@@ -87,6 +88,12 @@ def run_sync_only() -> None:
     _sync_sheets_to_db()
 
 
+def run_read_invoices() -> None:
+    """Lightweight invoice/sheet sync every 30 min — no notifications."""
+    logger.info(">>> MODE: read_invoices")
+    _sync_sheets_to_db()
+
+
 def run_eod_report() -> None:
     """Send EOD WhatsApp summary to Mike."""
     logger.info(">>> MODE: eod_report")
@@ -158,6 +165,7 @@ def run_reconcile() -> None:
 MODES = {
     "morning_report": run_morning_report,
     "sync_only":      run_sync_only,
+    "read_invoices":  run_read_invoices,
     "eod_report":     run_eod_report,
     "reconcile":      run_reconcile,
 }
