@@ -26,4 +26,4 @@ python-dotenv>=1.0.1
 pandas>=2.2.0
 
 # Scheduler (replaces n8n)
-apscheduler>=3.10.0
+apscheduler==3.10.4

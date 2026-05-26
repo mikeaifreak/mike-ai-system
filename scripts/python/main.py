@@ -171,6 +171,13 @@ MODES = {
 }
 
 
+def run_mode(mode: str) -> None:
+    """Dispatch to the correct pipeline function by mode name. Used by scheduler.py."""
+    if mode not in MODES:
+        raise ValueError(f"Unknown mode: {mode!r}. Valid: {list(MODES)}")
+    MODES[mode]()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Finance Controller AI — Pipeline Runner")
     parser.add_argument(

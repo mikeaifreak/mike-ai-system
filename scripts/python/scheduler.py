@@ -1,25 +1,36 @@
 """
-scheduler.py — APScheduler-based job runner replacing n8n.
+scheduler.py — APScheduler job runner (replaces n8n).
 
-Schedule (all times in TZ set by SCHEDULER_TIMEZONE env var, default UTC):
-  00:00  reconcile        sheet vs DB row-count check
-  06:55  sync_only        pre-fetch before morning report
-  07:00  morning_report   fetch + process + Slack report
-  */30   read_invoices    lightweight invoice sync every 30 minutes
-  21:00  eod_report       WhatsApp EOD summary
+Jobs (all times Europe/Amsterdam):
+  00:00  reconcile       nightly sheet vs DB check
+  06:50  sync_only       pre-fetch before morning report
+  07:00  morning_report  Slack P&L report
+  */30   read_invoices   Slack invoice scan
+  21:00  eod_report      WhatsApp EOD summary
 
-Run:
-  python scheduler.py
+Every job is logged to agent_runs. Failures send a Slack alert to
+SLACK_ALERTS_CHANNEL (falls back to SLACK_CHANNEL_ID).
 """
 
 import logging
 import os
-import subprocess
+import signal
 import sys
+import time
+from typing import Optional
 
+import psycopg2
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
+from dotenv import load_dotenv
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
 
+load_dotenv()
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
@@ -28,75 +39,190 @@ logging.basicConfig(
 )
 logger = logging.getLogger("scheduler")
 
-PYTHON = sys.executable
-SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
-TIMEZONE = os.getenv("SCHEDULER_TIMEZONE", "UTC")
+# ---------------------------------------------------------------------------
+# Config (read directly so scheduler can start even if a pipeline var is unset)
+# ---------------------------------------------------------------------------
+POSTGRES_URL       = os.getenv("POSTGRES_URL", "")
+SLACK_BOT_TOKEN    = os.getenv("SLACK_BOT_TOKEN", "")
+SLACK_ALERTS_CHANNEL = os.getenv("SLACK_ALERTS_CHANNEL") or os.getenv("SLACK_CHANNEL_ID", "")
+TIMEZONE           = os.getenv("SCHEDULER_TIMEZONE", "Europe/Amsterdam")
+
+# ---------------------------------------------------------------------------
+# Lazy import — keeps scheduler bootable if pipeline deps are temporarily broken
+# ---------------------------------------------------------------------------
+def _get_run_mode():
+    from main import run_mode  # noqa: PLC0415
+    return run_mode
 
 
-def run_mode(mode: str) -> None:
-    logger.info("Firing job: mode=%s", mode)
-    result = subprocess.run([PYTHON, SCRIPT, "--mode", mode])
-    if result.returncode != 0:
-        logger.error("Job mode=%s exited with code %d", mode, result.returncode)
-    else:
-        logger.info("Job mode=%s completed OK", mode)
+# ---------------------------------------------------------------------------
+# DB helpers
+# ---------------------------------------------------------------------------
 
+def _db_log_start(mode: str) -> Optional[str]:
+    """Insert a 'running' row into agent_runs, return its UUID string."""
+    if not POSTGRES_URL:
+        return None
+    try:
+        with psycopg2.connect(POSTGRES_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO agent_runs
+                        (agent_name, workflow_name, trigger_type, status)
+                    VALUES (%s, %s, 'cron', 'running')
+                    RETURNING id::text
+                    """,
+                    (f"scheduler.{mode}", mode),
+                )
+                run_id = cur.fetchone()[0]
+                conn.commit()
+                return run_id
+    except Exception as exc:
+        logger.warning("DB log_start failed: %s", exc)
+        return None
+
+
+def _db_log_end(
+    run_id: Optional[str],
+    status: str,
+    duration_ms: int,
+    error_message: Optional[str] = None,
+) -> None:
+    """Update the agent_runs row with final status + timing."""
+    if not run_id or not POSTGRES_URL:
+        return
+    try:
+        with psycopg2.connect(POSTGRES_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE agent_runs
+                    SET status        = %s,
+                        finished_at   = NOW(),
+                        duration_ms   = %s,
+                        error_message = %s
+                    WHERE id = %s::uuid
+                    """,
+                    (status, duration_ms, error_message, run_id),
+                )
+                conn.commit()
+    except Exception as exc:
+        logger.warning("DB log_end failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Slack failure alert
+# ---------------------------------------------------------------------------
+
+def _slack_failure_alert(mode: str, exc: Exception) -> None:
+    if not SLACK_BOT_TOKEN or not SLACK_ALERTS_CHANNEL:
+        logger.warning("Slack alert skipped — SLACK_BOT_TOKEN or SLACK_ALERTS_CHANNEL not set")
+        return
+    try:
+        client = WebClient(token=SLACK_BOT_TOKEN)
+        client.chat_postMessage(
+            channel=SLACK_ALERTS_CHANNEL,
+            text=(
+                f":rotating_light: *Scheduler job failed*\n"
+                f"*Mode:* `{mode}`\n"
+                f"*Error:* `{exc}`"
+            ),
+        )
+    except SlackApiError as slack_exc:
+        logger.warning("Slack failure alert error: %s", slack_exc)
+
+
+# ---------------------------------------------------------------------------
+# Job executor
+# ---------------------------------------------------------------------------
+
+def _execute(mode: str) -> None:
+    """Run one pipeline mode, log start/end to agent_runs, alert Slack on error."""
+    run_id = _db_log_start(mode)
+    t0 = time.monotonic()
+    logger.info("=" * 60)
+    logger.info("[%s] START", mode.upper())
+
+    try:
+        run_mode = _get_run_mode()
+        run_mode(mode)
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        logger.info("[%s] OK  duration=%dms", mode.upper(), duration_ms)
+        _db_log_end(run_id, "success", duration_ms)
+    except Exception as exc:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        logger.exception("[%s] FAILED  duration=%dms  error=%s", mode.upper(), duration_ms, exc)
+        _db_log_end(run_id, "error", duration_ms, str(exc))
+        _slack_failure_alert(mode, exc)
+    finally:
+        logger.info("=" * 60)
+
+
+# ---------------------------------------------------------------------------
+# Scheduler setup
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     scheduler = BlockingScheduler(timezone=TIMEZONE)
 
     scheduler.add_job(
-        run_mode,
+        _execute,
         CronTrigger(hour=0, minute=0, timezone=TIMEZONE),
         args=["reconcile"],
         id="reconcile",
-        name="Daily sheet-vs-DB reconciliation (midnight)",
+        name="Nightly sheet-vs-DB reconciliation (00:00)",
     )
 
     scheduler.add_job(
-        run_mode,
-        CronTrigger(hour=6, minute=55, timezone=TIMEZONE),
+        _execute,
+        CronTrigger(hour=6, minute=50, timezone=TIMEZONE),
         args=["sync_only"],
         id="sync_only",
-        name="Pre-fetch sync before morning report (06:55)",
+        name="Pre-fetch sync before morning report (06:50)",
     )
 
     scheduler.add_job(
-        run_mode,
+        _execute,
         CronTrigger(hour=7, minute=0, timezone=TIMEZONE),
         args=["morning_report"],
         id="morning_report",
-        name="Daily morning P&L report (07:00)",
+        name="Daily Slack P&L report (07:00)",
     )
 
     scheduler.add_job(
-        run_mode,
+        _execute,
         CronTrigger(minute="*/30", timezone=TIMEZONE),
         args=["read_invoices"],
         id="read_invoices",
-        name="Invoice sync every 30 minutes",
+        name="Slack invoice scan (every 30 min)",
     )
 
     scheduler.add_job(
-        run_mode,
+        _execute,
         CronTrigger(hour=21, minute=0, timezone=TIMEZONE),
         args=["eod_report"],
         id="eod_report",
-        name="End-of-day WhatsApp summary (21:00)",
+        name="WhatsApp EOD summary (21:00)",
     )
 
-    logger.info(
-        "Scheduler started | timezone=%s | jobs=%d",
-        TIMEZONE,
-        len(scheduler.get_jobs()),
-    )
+    # Graceful shutdown on SIGTERM / SIGINT
+    def _shutdown(signum, frame):
+        logger.info("Signal %d received — shutting down scheduler", signum)
+        scheduler.shutdown(wait=False)
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+
+    logger.info("Scheduler starting | timezone=%s", TIMEZONE)
+    logger.info("%-20s  %-45s  %s", "JOB ID", "NAME", "NEXT RUN")
+    logger.info("-" * 90)
     for job in scheduler.get_jobs():
-        logger.info("  %-20s  next_run=%s", job.id, job.next_run_time)
+        logger.info("%-20s  %-45s  %s", job.id, job.name, job.next_run_time)
+    logger.info("-" * 90)
 
-    try:
-        scheduler.start()
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Scheduler stopped.")
+    scheduler.start()
 
 
 if __name__ == "__main__":

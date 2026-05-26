@@ -2,7 +2,7 @@
 
 Automated Finance Controller + AI Agent pipelines for Mike's e-commerce / dropshipping business.
 
-**Stack:** Python · PostgreSQL · Google Sheets API · Slack · WhatsApp Business API · n8n · Claude Sonnet · GPT-4o
+**Stack:** Python · PostgreSQL · APScheduler · Google Sheets API · Slack · WhatsApp Business API · Claude Sonnet · GPT-4o · Docker
 
 ---
 
@@ -10,185 +10,123 @@ Automated Finance Controller + AI Agent pipelines for Mike's e-commerce / dropsh
 
 ```
 mike-ai-system/
-├── .github/workflows/          ← GitHub Actions CI (JSON validation)
 ├── database/
 │   └── schema.sql              ← PostgreSQL schema (tables, views, triggers)
+├── dashboard/
+│   ├── backend/                ← FastAPI + JWT auth + NOVA AI chat
+│   └── frontend/               ← React + Vite + Tailwind Mission Control UI
 ├── docs/
 │   ├── architecture.md         ← System design & data flow
 │   └── disaster-recovery.md    ← Full restore runbook
-├── n8n/
-│   ├── workflows/
-│   │   ├── finance/            ← P&L pipeline workflows
-│   │   ├── product-research/   ← (System 2 — future)
-│   │   ├── creative/           ← (System 3 — future)
-│   │   ├── whatsapp/           ← WhatsApp AI agent workflows
-│   │   └── shared/             ← Backup, error handler, utilities
-│   └── environments/           ← Per-environment .env templates
 ├── scripts/
-│   ├── backup-workflows-to-git.sh
-│   ├── restore-workflows-from-git.sh
-│   ├── export-all-workflows.sh
-│   ├── import-all-workflows.sh
-│   └── python/                 ← Finance pipeline Python source
-└── .env.example
+│   └── python/                 ← Finance pipeline + APScheduler
+│       ├── scheduler.py        ← Cron job runner (replaces n8n)
+│       ├── main.py             ← Pipeline orchestrator (all modes)
+│       ├── config.py           ← Env var loader
+│       ├── sheets_parser.py    ← Google Sheets ingestion
+│       ├── pl_processor.py     ← P&L processing + anomaly detection
+│       ├── slack_reporter.py   ← Slack reports + alerts
+│       ├── whatsapp_alerts.py  ← WhatsApp EOD messages
+│       ├── Dockerfile          ← Scheduler container image
+│       └── requirements.txt    ← Python dependencies
+├── HOW_TO_DEPLOY.md            ← Complete deployment guide
+├── docker-compose.yml          ← All 4 services
+└── .env.example                ← Environment variable template
 ```
+
+---
+
+## Services
+
+| Service | Port | Description |
+|---|---|---|
+| `postgres` | 5432 | PostgreSQL 15 — persistent finance data |
+| `scheduler` | — | APScheduler — runs all cron jobs automatically |
+| `dashboard-backend` | 8000 | FastAPI — REST API + NOVA AI chat |
+| `dashboard-frontend` | 3000 | React Mission Control dashboard |
+
+---
+
+## Automated Schedule (Europe/Amsterdam)
+
+| Time | Mode | What it does |
+|---|---|---|
+| 06:50 daily | `sync_only` | Pre-fetch Google Sheet data |
+| 07:00 daily | `morning_report` | Slack P&L daily report |
+| Every 30 min | `read_invoices` | Scan + log supplier invoices |
+| 21:00 daily | `eod_report` | WhatsApp EOD summary to Mike |
+| 00:00 daily | `reconcile` | Sheet vs DB row-count audit |
+
+Every job logs start/end/duration to the `agent_runs` table and sends a Slack alert to `#alerts` on failure.
 
 ---
 
 ## Quick Start
 
-### 1. Clone & configure
+See **[HOW_TO_DEPLOY.md](HOW_TO_DEPLOY.md)** for the complete step-by-step guide.
+
+### TL;DR
 
 ```bash
-git clone git@github.com:YOUR_ORG/mike-ai-system.git
+git clone https://github.com/mikeaifreak/mike-ai-system.git
 cd mike-ai-system
 cp .env.example .env
 # Fill in all values in .env
+docker-compose up --build -d
 ```
 
-### 2. Apply the database schema
+---
+
+## Running Pipeline Modes Manually
 
 ```bash
-psql "$POSTGRES_URL" -f database/schema.sql
-```
+# Sync Google Sheet → DB (no notifications)
+docker exec mike-ai-system-scheduler-1 python main.py --mode sync_only
 
-### 3. Install Python dependencies
-
-```bash
-cd scripts/python
-pip install -r requirements.txt
-```
-
-### 4. Test the pipeline manually
-
-```bash
-# Full morning run
-python scripts/python/main.py --mode morning_report
-
-# Sync sheet only
-python scripts/python/main.py --mode sync_only
+# Full morning report → Slack
+docker exec mike-ai-system-scheduler-1 python main.py --mode morning_report
 
 # EOD WhatsApp summary
-python scripts/python/main.py --mode eod_report
+docker exec mike-ai-system-scheduler-1 python main.py --mode eod_report
 
-# Reconciliation check
-python scripts/python/main.py --mode reconcile
-```
+# Nightly reconciliation
+docker exec mike-ai-system-scheduler-1 python main.py --mode reconcile
 
-### 5. Import workflows into n8n
-
-```bash
-chmod +x scripts/*.sh
-./scripts/import-all-workflows.sh
+# Invoice scan
+docker exec mike-ai-system-scheduler-1 python main.py --mode read_invoices
 ```
 
 ---
 
-## n8n Workflow Inventory
-
-### Finance Pipelines
-
-| File | Schedule | What it does |
-|---|---|---|
-| `finance/daily-pl-morning-report.json` | 06:30 Mon–Fri | Sync sheet → DB → Slack P&L report |
-| `finance/sheet-sync-only.json` | Hourly | Re-sync last 7 days silently |
-| `finance/eod-whatsapp-summary.json` | 21:00 daily | WhatsApp EOD summary to Mike |
-| `finance/weekly-reconciliation.json` | Mon 08:00 | Sheet vs DB row-count audit |
-
-### Shared Infrastructure
-
-| File | Schedule | What it does |
-|---|---|---|
-| `shared/backup-to-github.json` | 02:00 daily | Export all workflows → push to this repo |
-| `shared/global-error-handler.json` | On error | Catch unhandled failures → Slack + WhatsApp |
-
----
-
-## Backup & Version Control
-
-### Automated daily backup
-
-The `shared/backup-to-github.json` workflow runs at **02:00 AM** every night.
-It uses the n8n REST API + GitHub API to export every active workflow as a `.json` file and commit it to this repository.
-
-No manual action required once the workflow is imported and activated.
-
-### Manual backup (emergency)
+## Useful Maintenance Commands
 
 ```bash
-# Export every workflow from n8n and push to GitHub
-./scripts/backup-workflows-to-git.sh
+# Live scheduler logs
+docker-compose logs -f scheduler
+
+# Restart all services
+docker-compose restart
+
+# Stop all services
+docker-compose down
+
+# Check database tables
+docker exec -it mike-ai-system-postgres-1 psql -U mike_admin -d mike_finance -c "\dt"
 ```
-
-### Manual export only (no git push)
-
-```bash
-# Dumps all workflow JSONs into n8n/workflows/ by tag/folder
-./scripts/export-all-workflows.sh
-```
-
----
-
-## Restore from GitHub
-
-Full restore runbook: [`docs/disaster-recovery.md`](docs/disaster-recovery.md)
-
-**TL;DR — restore everything in 3 commands:**
-
-```bash
-git pull origin main
-./scripts/restore-workflows-from-git.sh
-psql "$POSTGRES_URL" -f database/schema.sql
-```
-
----
-
-## n8n Source Control (Enterprise / Cloud Teams)
-
-If your n8n instance has **Source Control** enabled (n8n ≥ 1.x Teams / Enterprise):
-
-1. Go to **Settings → Source Control**
-2. Connect to this repository
-3. Branch: `main` (production) or `staging` for testing
-4. Push/pull directly from the n8n UI
-
-For n8n Community or n8n Cloud Starter, use the shell scripts instead.
 
 ---
 
 ## Environment Variables
 
-See [`.env.example`](.env.example) for the full list with explanations.
+See [`.env.example`](.env.example) for the full list. Required groups:
 
-Required groups:
+- `POSTGRES_*` — database connection
 - `GOOGLE_*` — Sheets API service account
-- `POSTGRES_URL` — database connection string
-- `SLACK_*` — bot token + channel
+- `SLACK_*` — bot token + channel IDs
 - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` — AI models
 - `WHATSAPP_*` — Meta Cloud API credentials
-- `N8N_BASE_URL` / `N8N_API_KEY` — for the backup workflow
-- `GITHUB_TOKEN` / `GITHUB_REPO` — for automated git push
-
----
-
-## Adding a New Workflow
-
-1. Build the workflow in n8n
-2. Tag it with the correct folder name: `finance`, `product-research`, `creative`, `whatsapp`, or `shared`
-3. Run `./scripts/export-all-workflows.sh` — it lands in the correct subfolder automatically
-4. `git add n8n/workflows/ && git commit -m "feat: add <workflow-name>"`
-5. Push → GitHub Actions validates the JSON
-
----
-
-## Deployment Targets
-
-| Target | Status | Notes |
-|---|---|---|
-| n8n Cloud | Active (now) | Import workflows via UI or CLI |
-| Mac Mini (self-hosted) | Planned | Run `./scripts/import-all-workflows.sh` after setup |
-
-Migration from Cloud → Mac Mini: pull this repo, run schema + import script, update `.env`.
+- `JWT_SECRET` / `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` — dashboard auth
+- `SCHEDULER_TIMEZONE` — defaults to `Europe/Amsterdam`
 
 ---
 
@@ -196,3 +134,4 @@ Migration from Cloud → Mac Mini: pull this repo, run schema + import script, u
 
 - Architecture details: [`docs/architecture.md`](docs/architecture.md)
 - Disaster recovery: [`docs/disaster-recovery.md`](docs/disaster-recovery.md)
+- Full deployment guide: [`HOW_TO_DEPLOY.md`](HOW_TO_DEPLOY.md)
