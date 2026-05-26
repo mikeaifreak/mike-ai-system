@@ -1,5 +1,8 @@
 # Finance Controller AI System — Python dependencies
 
+# Google Ads API
+google-ads==24.1.0
+
 # PostgreSQL
 psycopg2-binary>=2.9.9
 

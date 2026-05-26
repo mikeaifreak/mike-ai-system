@@ -2,11 +2,12 @@
 scheduler.py — APScheduler job runner (replaces n8n).
 
 Jobs (all times Europe/Amsterdam):
-  00:00  reconcile       nightly sheet vs DB check
-  06:50  sync_only       pre-fetch before morning report
-  07:00  morning_report  Slack P&L report
-  */30   read_invoices   Slack invoice scan
-  21:00  eod_report      WhatsApp EOD summary
+  00:00  reconcile        nightly sheet vs DB check
+  06:45  pull_google_ads  fetch ad spend from Google Ads API
+  06:50  sync_only        fetch remaining P&L from Google Sheet
+  07:00  morning_report   Slack P&L report (complete data)
+  */30   read_invoices    Slack invoice scan
+  21:00  eod_report       WhatsApp EOD summary
 
 Every job is logged to agent_runs. Failures send a Slack alert to
 SLACK_ALERTS_CHANNEL (falls back to SLACK_CHANNEL_ID).
@@ -176,10 +177,18 @@ def main() -> None:
 
     scheduler.add_job(
         _execute,
+        CronTrigger(hour=6, minute=45, timezone=TIMEZONE),
+        args=["pull_google_ads"],
+        id="pull_google_ads",
+        name="Google Ads spend pull (06:45)",
+    )
+
+    scheduler.add_job(
+        _execute,
         CronTrigger(hour=6, minute=50, timezone=TIMEZONE),
         args=["sync_only"],
         id="sync_only",
-        name="Pre-fetch sync before morning report (06:50)",
+        name="Google Sheet P&L sync (06:50)",
     )
 
     scheduler.add_job(

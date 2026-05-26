@@ -34,7 +34,10 @@ INSERT INTO daily_pl (
 ON CONFLICT (store_id, report_date) DO UPDATE SET
     revenue         = EXCLUDED.revenue,
     cog             = EXCLUDED.cog,
-    adspend_google  = EXCLUDED.adspend_google,
+    -- COALESCE: preserve Google Ads API values when the sheet has no ad spend column.
+    -- google_ads_puller.py writes these at 06:45; sheet sync runs at 06:50.
+    -- If the sheet row has NULL for these fields, the existing API values survive.
+    adspend_google  = COALESCE(EXCLUDED.adspend_google, daily_pl.adspend_google),
     mediabuying     = EXCLUDED.mediabuying,
     employee_cost   = EXCLUDED.employee_cost,
     transaction_fee = EXCLUDED.transaction_fee,
@@ -42,8 +45,8 @@ ON CONFLICT (store_id, report_date) DO UPDATE SET
     roas            = EXCLUDED.roas,
     profit_pct      = EXCLUDED.profit_pct,
     cog_pct         = EXCLUDED.cog_pct,
-    cvr_pct         = EXCLUDED.cvr_pct,
-    cpc             = EXCLUDED.cpc,
+    cvr_pct         = COALESCE(EXCLUDED.cvr_pct, daily_pl.cvr_pct),
+    cpc             = COALESCE(EXCLUDED.cpc,     daily_pl.cpc),
     refunds         = EXCLUDED.refunds,
     refund_pct      = EXCLUDED.refund_pct,
     source          = EXCLUDED.source,

@@ -2,12 +2,17 @@
 main.py — Finance Controller AI System orchestrator.
 
 Usage:
-    python main.py                          # full morning pipeline (default)
+    python main.py --mode pull_google_ads   # pull ad spend from Google Ads API → daily_pl
+    python main.py --mode sync_only         # fetch + process Google Sheet, no alerts
     python main.py --mode morning_report    # fetch + process + Slack report
-    python main.py --mode sync_only         # fetch + process, no alerts
     python main.py --mode read_invoices     # lightweight invoice/sheet sync (no notifications)
     python main.py --mode eod_report        # WhatsApp EOD summary
     python main.py --mode reconcile         # sheet vs DB row-count check
+
+Daily pipeline order (automated by scheduler.py):
+    06:45  pull_google_ads  → ad spend from Google Ads API
+    06:50  sync_only        → remaining P&L from Google Sheet
+    07:00  morning_report   → Slack report with complete data
 
 MODE can also be set via the MODE environment variable.
 """
@@ -26,6 +31,7 @@ from sheets_parser import fetch_pl_data
 from pl_processor import process_and_store
 from slack_reporter import send_daily_report, send_anomaly_alert
 from whatsapp_alerts import send_eod_summary
+from google_ads_puller import pull_all_stores
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -87,6 +93,12 @@ def run_morning_report() -> None:
     logger.info("=== REPORT: Sending Slack daily report for %s ===", yesterday)
     delivered = send_daily_report(yesterday)
     logger.info("Slack report delivered: %s", delivered)
+
+
+def run_pull_google_ads() -> None:
+    """Pull yesterday's ad spend from Google Ads API → upsert into daily_pl."""
+    logger.info(">>> MODE: pull_google_ads")
+    pull_all_stores()
 
 
 def run_sync_only() -> None:
@@ -170,11 +182,12 @@ def run_reconcile() -> None:
 # ---------------------------------------------------------------------------
 
 MODES = {
-    "morning_report": run_morning_report,
-    "sync_only":      run_sync_only,
-    "read_invoices":  run_read_invoices,
-    "eod_report":     run_eod_report,
-    "reconcile":      run_reconcile,
+    "pull_google_ads": run_pull_google_ads,
+    "morning_report":  run_morning_report,
+    "sync_only":       run_sync_only,
+    "read_invoices":   run_read_invoices,
+    "eod_report":      run_eod_report,
+    "reconcile":       run_reconcile,
 }
 
 
