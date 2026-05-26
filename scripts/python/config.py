@@ -85,59 +85,80 @@ WHATSAPP_RECIPIENT_NUMBER:   str = _require("WHATSAPP_RECIPIENT_NUMBER")
 WHATSAPP_API_VERSION:        str = os.getenv("WHATSAPP_API_VERSION", "v18.0")
 
 # ---------------------------------------------------------------------------
-# Google Ads API (optional — only required for pull_google_ads mode)
+# Google Ads spend sheets (optional — required for pull_google_ads mode)
 #
-# Credentials are read from env vars; no google-ads.yaml file is needed.
-# GoogleAdsClient.load_from_dict() accepts the same keys as the yaml file.
+# Mike installs scripts/google-ads-script.js in each Google Ads account.
+# The script writes daily campaign rows to a Google Sheet.
+# Each sheet is exposed via a Google Apps Script web app URL.
+# No Google Ads API credentials are needed here — auth is handled inside
+# the Google Ads Script running in Mike's account.
 #
-# GOOGLE_ADS_CUSTOMER_IDS formats:
-#   Single store:  "1234567890"
-#                  → {"default": "1234567890"}
-#   Multi-store:   "store_nl:1234567890,store_de:9876543210"
-#                  → {"store_nl": "1234567890", "store_de": "9876543210"}
+# GOOGLE_ADS_SHEET_URLS formats (same pattern as GOOGLE_SCRIPT_URL):
+#   Single store:  "https://script.google.com/macros/s/.../exec"
+#                  → {"default": url}
+#   Multi-store:   "store_nl:https://...,store_de:https://..."
+#                  → {"store_nl": url, "store_de": url}
+#   JSON map:      '{"store_nl":"https://...","store_de":"https://..."}'
 # ---------------------------------------------------------------------------
-GOOGLE_ADS_DEVELOPER_TOKEN: str = os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN", "")
-GOOGLE_ADS_CLIENT_ID:       str = os.getenv("GOOGLE_ADS_CLIENT_ID", "")
-GOOGLE_ADS_CLIENT_SECRET:   str = os.getenv("GOOGLE_ADS_CLIENT_SECRET", "")
-GOOGLE_ADS_REFRESH_TOKEN:   str = os.getenv("GOOGLE_ADS_REFRESH_TOKEN", "")
-
-
-def _parse_customer_ids(raw: str) -> dict:
-    """
-    Parse GOOGLE_ADS_CUSTOMER_IDS into a dict[store_id → customer_id].
-    Dashes in customer IDs are stripped (Google Ads API accepts both formats).
-    """
-    if not raw.strip():
-        return {}
-    parts = [p.strip() for p in raw.split(",") if p.strip()]
-    if not parts:
+def _parse_ads_sheet_urls(raw: str) -> dict:
+    """Parse GOOGLE_ADS_SHEET_URLS into a dict[store_id → apps_script_url]."""
+    stripped = raw.strip()
+    if not stripped:
         return {}
 
-    has_colon = [(":" in p) for p in parts]
-    if any(has_colon) and not all(has_colon):
-        raise EnvironmentError(
-            "GOOGLE_ADS_CUSTOMER_IDS mixes plain IDs and store:id pairs. "
-            "Use either all plain IDs or all 'store_name:customer_id' format."
-        )
+    # JSON map format
+    if stripped.startswith("{"):
+        try:
+            mapping = json.loads(stripped)
+            return {str(k): str(v) for k, v in mapping.items()}
+        except json.JSONDecodeError as exc:
+            raise EnvironmentError(
+                f"GOOGLE_ADS_SHEET_URLS looks like JSON but failed to parse: {exc}"
+            ) from exc
 
-    if all(has_colon):
-        result = {}
-        for p in parts:
-            store, cid = p.split(":", 1)
-            result[store.strip()] = cid.strip().replace("-", "")
-        return result
+    # Check for store:url,store:url format — URLs contain "://" so we split
+    # on the first comma only if it appears AFTER a complete URL segment.
+    # Strategy: split on comma, then check if each part has a non-URL colon.
+    parts = []
+    current = ""
+    for char in stripped:
+        if char == "," and "://" in current:
+            parts.append(current.strip())
+            current = ""
+        else:
+            current += char
+    if current.strip():
+        parts.append(current.strip())
 
     if len(parts) == 1:
-        return {"default": parts[0].replace("-", "")}
+        part = parts[0]
+        # store_name:https://... format?
+        if "://" in part and part.index(":") < part.index("://"):
+            store, url = part.split(":", 1)
+            return {store.strip(): url.strip()}
+        return {"default": part}
 
-    raise EnvironmentError(
-        f"GOOGLE_ADS_CUSTOMER_IDS has {len(parts)} plain IDs with no store names. "
-        "For multiple stores use 'store_nl:ID1,store_de:ID2' format."
-    )
+    # Multiple parts — must be store:url format
+    result = {}
+    for part in parts:
+        if "://" not in part:
+            raise EnvironmentError(
+                f"GOOGLE_ADS_SHEET_URLS part does not look like a URL: {part!r}"
+            )
+        colon_before_scheme = part.index(":") < part.index("://")
+        if colon_before_scheme:
+            store, url = part.split(":", 1)
+            result[store.strip()] = url.strip()
+        else:
+            raise EnvironmentError(
+                f"Multiple URLs in GOOGLE_ADS_SHEET_URLS require store names. "
+                f"Use 'store_nl:https://...,store_de:https://...' format."
+            )
+    return result
 
 
-GOOGLE_ADS_STORE_CUSTOMERS: dict = _parse_customer_ids(
-    os.getenv("GOOGLE_ADS_CUSTOMER_IDS", "")
+GOOGLE_ADS_STORE_SHEET_URLS: dict = _parse_ads_sheet_urls(
+    os.getenv("GOOGLE_ADS_SHEET_URLS", "")
 )
 
 # ---------------------------------------------------------------------------
