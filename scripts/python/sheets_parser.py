@@ -101,6 +101,7 @@ _LAYOUT_APR = {
 # Fallback: header-name → canonical field (for array-of-objects format)
 _HEADER_MAP = {
     "date": "report_date", "datum": "report_date", "spalte 1": "report_date",
+    "_date_iso": "report_date",
     "revenue": "revenue",
     "cog": "cog",
     "adspend google": "adspend_google", "adspend_google": "adspend_google",
