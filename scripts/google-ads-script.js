@@ -1,75 +1,68 @@
-/**
- * Google Ads Script — Daily Campaign Performance Export
- *
- * HOW TO INSTALL (repeat for each Google Ads account):
- * ─────────────────────────────────────────────────────
- * 1. Open Google Ads → Tools & Settings → Bulk Actions → Scripts
- * 2. Click the blue "+" button to create a new script
- * 3. Paste this entire file into the editor
- * 4. Set SHEET_URL below to the URL of the target Google Sheet
- *    (each account should write to its own tab in the same sheet,
- *     or to a completely separate sheet — see SHEET_TAB below)
- * 5. Click "Authorize" and grant the required permissions
- * 6. Click "Run" once manually to verify it works and to confirm
- *    the permission dialog
- * 7. Set the schedule: click "Frequency" → Daily → 06:00 AM
- *    (use the same timezone as your Google Ads account)
- * 8. Save
- *
- * OUTPUT SHEET COLUMNS:
- *   Date | Account Name | Campaign | Spend | Impressions | Clicks | Conversions | CPC
- *
- * The script writes one row per campaign per day.
- * Our Python system aggregates across all campaigns when it reads the sheet.
- * Re-running for the same day is safe — existing rows for that date are
- * deleted before new rows are written (idempotent).
- */
+// Google Ads Script -- Daily Campaign Performance Export
+//
+// INSTALL (repeat for each Google Ads account):
+// 1. Google Ads > Tools & Settings > Bulk Actions > Scripts > click "+"
+// 2. Paste this entire script into the editor
+// 3. Set SHEET_URL below to a Google Sheet you own
+// 4. Click "Authorize" and grant permissions
+// 5. Click "Run" once to verify it works
+// 6. Set schedule: Frequency > Daily > 06:00 AM (account timezone)
+// 7. Save
+//
+// OUTPUT SHEET:
+//   Tab name : "Google Ads Daily - [Your Account Name]"  (auto-created)
+//   Columns  : Date | Account | Campaign | Spend | Impressions | Clicks | Conversions | ROAS
+//
+// One row per campaign per day.
+// Re-running for the same day is safe -- existing rows are deleted first.
 
-// ─── CONFIGURATION (edit these two lines only) ────────────────────────────
+// ---------- CONFIGURATION (only edit this line) ----------
 var SHEET_URL = 'https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit';
-var SHEET_TAB = 'Ads Data';  // Tab name — use a unique name per account if
-                              // multiple accounts write to the same spreadsheet
-// ─────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------
 
-var HEADER = ['Date', 'Account Name', 'Campaign', 'Spend', 'Impressions', 'Clicks', 'Conversions', 'CPC'];
-var MICROS  = 1000000;
+var HEADER = ['Date', 'Account', 'Campaign', 'Spend', 'Impressions', 'Clicks', 'Conversions', 'ROAS'];
+var MICROS = 1000000;
 
 function main() {
-  var account    = AdsApp.currentAccount();
+  var account = AdsApp.currentAccount();
   var accountName = account.getName();
-  var timezone   = account.getTimeZone();
+  var timezone = account.getTimeZone();
+
+  // Sheet tab is named after the account -- unique per account automatically
+  var sheetTab = 'Google Ads Daily - ' + accountName;
 
   // Yesterday in account timezone
-  var yesterday  = new Date();
+  var yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
-  var dateStr    = Utilities.formatDate(yesterday, timezone, 'yyyy-MM-dd');
+  var dateStr = Utilities.formatDate(yesterday, timezone, 'yyyy-MM-dd');
 
-  Logger.log('Running for account: ' + accountName + '  date: ' + dateStr);
+  Logger.log('=== Google Ads Export Start ===');
+  Logger.log('Account  : ' + accountName);
+  Logger.log('Date     : ' + dateStr);
+  Logger.log('Sheet tab: ' + sheetTab);
 
-  // ── Fetch campaign metrics via GAQL ──────────────────────────────────
-  var query = [
-    'SELECT',
-    '  campaign.name,',
-    '  metrics.cost_micros,',
-    '  metrics.impressions,',
-    '  metrics.clicks,',
-    '  metrics.conversions',
-    'FROM campaign',
-    "WHERE segments.date = '" + dateStr + "'",
-    "  AND campaign.status != 'REMOVED'"
-  ].join(' ');
+  // Fetch campaign metrics via GAQL
+  var query = 'SELECT campaign.name, metrics.cost_micros, metrics.impressions, ' +
+              'metrics.clicks, metrics.conversions, metrics.conversions_value ' +
+              'FROM campaign ' +
+              "WHERE segments.date = '" + dateStr + "' " +
+              "AND campaign.status != 'REMOVED'";
+
+  Logger.log('Running GAQL query...');
 
   var result = AdsApp.search(query);
-
   var rows = [];
+
   while (result.hasNext()) {
-    var row        = result.next();
+    var row = result.next();
+
     var costMicros = row['metrics.cost_micros'] || 0;
     var clicks     = row['metrics.clicks']      || 0;
+    var convValue  = row['metrics.conversions_value'] || 0;
     var spend      = costMicros / MICROS;
-    var cpc        = clicks > 0 ? Math.round((spend / clicks) * 10000) / 10000 : 0;
+    var roas       = spend > 0 ? Math.round((convValue / spend) * 100) / 100 : 0;
 
-    rows.push([
+    var dataRow = [
       dateStr,
       accountName,
       row['campaign.name'],
@@ -77,55 +70,66 @@ function main() {
       row['metrics.impressions'] || 0,
       clicks,
       row['metrics.conversions'] || 0,
-      cpc
-    ]);
+      roas
+    ];
+
+    rows.push(dataRow);
+    Logger.log('  Campaign: ' + row['campaign.name'] +
+               ' | Spend: ' + spend +
+               ' | Conversions: ' + (row['metrics.conversions'] || 0) +
+               ' | ROAS: ' + roas);
   }
 
-  Logger.log('Campaigns with data: ' + rows.length);
+  Logger.log('Campaigns found: ' + rows.length);
 
   if (rows.length === 0) {
-    Logger.log('No campaign data for ' + dateStr + ' — nothing written.');
+    Logger.log('No campaign data for ' + dateStr + ' -- nothing written to sheet.');
     return;
   }
 
-  // ── Open sheet ────────────────────────────────────────────────────────
-  var ss    = SpreadsheetApp.openByUrl(SHEET_URL);
-  var sheet = ss.getSheetByName(SHEET_TAB);
-
-  if (!sheet) {
-    sheet = ss.insertSheet(SHEET_TAB);
-    Logger.log('Created new tab: ' + SHEET_TAB);
+  // Open the Google Sheet
+  var ss = SpreadsheetApp.openByUrl(SHEET_URL);
+  if (!ss) {
+    Logger.log('ERROR: Could not open sheet at URL: ' + SHEET_URL);
+    return;
   }
 
-  // Write header if sheet is empty
+  // Auto-create the tab if it does not exist
+  var sheet = ss.getSheetByName(sheetTab);
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetTab);
+    Logger.log('Created new tab: ' + sheetTab);
+  }
+
+  // Write header row if sheet is empty
   if (sheet.getLastRow() === 0) {
     sheet.appendRow(HEADER);
     Logger.log('Header row written.');
   }
 
-  // ── Remove existing rows for yesterday (idempotent re-runs) ──────────
+  // Delete existing rows for yesterday (makes re-runs idempotent)
   var lastRow = sheet.getLastRow();
   if (lastRow > 1) {
-    var dateCol  = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-    var toDelete = [];
-    for (var i = dateCol.length - 1; i >= 0; i--) {
-      if (dateCol[i][0] === dateStr) {
-        toDelete.push(i + 2); // +2 because data starts at row 2 (1-indexed)
+    var dateValues = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    var deleteCount = 0;
+    // Iterate backwards so row deletion does not shift remaining indices
+    for (var i = dateValues.length - 1; i >= 0; i--) {
+      if (dateValues[i][0] === dateStr) {
+        sheet.deleteRow(i + 2); // +2: rows are 1-indexed and row 1 is the header
+        deleteCount++;
       }
     }
-    toDelete.forEach(function(rowIndex) {
-      sheet.deleteRow(rowIndex);
-    });
-    if (toDelete.length > 0) {
-      Logger.log('Removed ' + toDelete.length + ' existing rows for ' + dateStr);
+    if (deleteCount > 0) {
+      Logger.log('Removed ' + deleteCount + ' existing rows for ' + dateStr);
     }
   }
 
-  // ── Append new rows ───────────────────────────────────────────────────
-  rows.forEach(function(row) {
-    sheet.appendRow(row);
-  });
+  // Append new rows
+  for (var j = 0; j < rows.length; j++) {
+    sheet.appendRow(rows[j]);
+  }
 
-  Logger.log('SUCCESS: wrote ' + rows.length + ' rows for ' + dateStr
-             + ' (account: ' + accountName + ')');
+  Logger.log('SUCCESS: wrote ' + rows.length + ' rows for ' + dateStr +
+             ' to tab "' + sheetTab + '"');
+  Logger.log('=== Google Ads Export Done ===');
 }
