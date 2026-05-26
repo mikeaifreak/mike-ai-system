@@ -2,12 +2,14 @@
 scheduler.py — APScheduler job runner (replaces n8n).
 
 Jobs (all times Europe/Amsterdam):
-  00:00  reconcile        nightly sheet vs DB check
-  06:45  pull_google_ads  fetch ad spend from Google Ads API
-  06:50  sync_only        fetch remaining P&L from Google Sheet
-  07:00  morning_report   Slack P&L report (complete data)
-  */30   read_invoices    Slack invoice scan
-  21:00  eod_report       WhatsApp EOD summary
+  00:00  reconcile          nightly sheet vs DB check
+  06:40  pull_shopify        write revenue(B) + refunds(O) to P&L sheet
+  06:45  pull_google_ads     write adspend_google(D) to P&L sheet
+  06:46  pull_pinterest_ads  write adspend_pinterest(E) to P&L sheet
+  06:50  sync_only           read full P&L row (incl. formulas), store in PostgreSQL
+  07:00  morning_report      Slack P&L report (complete data)
+  */30   read_invoices       Slack invoice scan
+  21:00  eod_report          WhatsApp EOD summary
 
 Every job is logged to agent_runs. Failures send a Slack alert to
 SLACK_ALERTS_CHANNEL (falls back to SLACK_CHANNEL_ID).
@@ -177,10 +179,26 @@ def main() -> None:
 
     scheduler.add_job(
         _execute,
+        CronTrigger(hour=6, minute=40, timezone=TIMEZONE),
+        args=["pull_shopify"],
+        id="pull_shopify",
+        name="Shopify revenue + refunds → P&L sheet (06:40)",
+    )
+
+    scheduler.add_job(
+        _execute,
         CronTrigger(hour=6, minute=45, timezone=TIMEZONE),
         args=["pull_google_ads"],
         id="pull_google_ads",
-        name="Google Ads spend pull (06:45)",
+        name="Google Ads spend → P&L sheet col D (06:45)",
+    )
+
+    scheduler.add_job(
+        _execute,
+        CronTrigger(hour=6, minute=46, timezone=TIMEZONE),
+        args=["pull_pinterest_ads"],
+        id="pull_pinterest_ads",
+        name="Pinterest Ads spend → P&L sheet col E (06:46)",
     )
 
     scheduler.add_job(
@@ -188,7 +206,7 @@ def main() -> None:
         CronTrigger(hour=6, minute=50, timezone=TIMEZONE),
         args=["sync_only"],
         id="sync_only",
-        name="Google Sheet P&L sync (06:50)",
+        name="Read full P&L row → PostgreSQL (06:50)",
     )
 
     scheduler.add_job(

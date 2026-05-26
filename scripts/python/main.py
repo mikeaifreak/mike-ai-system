@@ -2,17 +2,21 @@
 main.py — Finance Controller AI System orchestrator.
 
 Usage:
-    python main.py --mode pull_google_ads   # pull ad spend from Google Ads API → daily_pl
-    python main.py --mode sync_only         # fetch + process Google Sheet, no alerts
-    python main.py --mode morning_report    # fetch + process + Slack report
-    python main.py --mode read_invoices     # lightweight invoice/sheet sync (no notifications)
-    python main.py --mode eod_report        # WhatsApp EOD summary
-    python main.py --mode reconcile         # sheet vs DB row-count check
+    python main.py --mode pull_shopify       # pull revenue + refunds → write to P&L sheet
+    python main.py --mode pull_google_ads    # pull ad spend → write adspend_google(D) to sheet
+    python main.py --mode pull_pinterest_ads # pull Pinterest spend → write adspend_pinterest(E)
+    python main.py --mode sync_only          # read full P&L sheet → store in PostgreSQL
+    python main.py --mode morning_report     # sync + Slack daily report
+    python main.py --mode read_invoices      # lightweight sheet sync, no notifications
+    python main.py --mode eod_report         # WhatsApp EOD summary
+    python main.py --mode reconcile          # sheet vs DB row-count check
 
-Daily pipeline order (automated by scheduler.py):
-    06:45  pull_google_ads  → ad spend from Google Ads API
-    06:50  sync_only        → remaining P&L from Google Sheet
-    07:00  morning_report   → Slack report with complete data
+Daily pipeline (automated by scheduler.py, all times Europe/Amsterdam):
+    06:40  pull_shopify       → writes revenue(B) + refunds(O) to P&L sheet
+    06:45  pull_google_ads    → writes adspend_google(D) to P&L sheet
+    06:46  pull_pinterest_ads → writes adspend_pinterest(E) to P&L sheet
+    06:50  sync_only          → reads full P&L row (incl. calculated cols), stores in PostgreSQL
+    07:00  morning_report     → Slack report from PostgreSQL
 
 MODE can also be set via the MODE environment variable.
 """
@@ -31,7 +35,8 @@ from sheets_parser import fetch_pl_data
 from pl_processor import process_and_store
 from slack_reporter import send_daily_report, send_anomaly_alert
 from whatsapp_alerts import send_eod_summary
-from google_ads_puller import pull_all_stores
+from google_ads_puller import pull_all_stores as _pull_google_ads_stores
+from pinterest_ads_puller import pull_all_stores as _pull_pinterest_ads_stores
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -95,10 +100,27 @@ def run_morning_report() -> None:
     logger.info("Slack report delivered: %s", delivered)
 
 
+def run_pull_shopify() -> None:
+    """Pull yesterday's revenue + refunds from Shopify → write to P&L sheet (B, O)."""
+    logger.info(">>> MODE: pull_shopify")
+    # Shopify integration not yet configured — skipping gracefully.
+    # Will be implemented when SHOPIFY_API_KEY and SHOPIFY_STORE_URLS are set in .env.
+    logger.warning(
+        "pull_shopify: Shopify credentials not yet configured. "
+        "Set SHOPIFY_API_KEY and SHOPIFY_STORE_URL in .env to activate."
+    )
+
+
 def run_pull_google_ads() -> None:
-    """Pull yesterday's ad spend from Google Ads API → upsert into daily_pl."""
+    """Pull Google Ads spend → write adspend_google(D) to P&L sheet."""
     logger.info(">>> MODE: pull_google_ads")
-    pull_all_stores()
+    _pull_google_ads_stores()
+
+
+def run_pull_pinterest_ads() -> None:
+    """Pull Pinterest Ads spend → write adspend_pinterest(E) to P&L sheet."""
+    logger.info(">>> MODE: pull_pinterest_ads")
+    _pull_pinterest_ads_stores()
 
 
 def run_sync_only() -> None:
@@ -182,12 +204,14 @@ def run_reconcile() -> None:
 # ---------------------------------------------------------------------------
 
 MODES = {
-    "pull_google_ads": run_pull_google_ads,
-    "morning_report":  run_morning_report,
-    "sync_only":       run_sync_only,
-    "read_invoices":   run_read_invoices,
-    "eod_report":      run_eod_report,
-    "reconcile":       run_reconcile,
+    "pull_shopify":       run_pull_shopify,
+    "pull_google_ads":    run_pull_google_ads,
+    "pull_pinterest_ads": run_pull_pinterest_ads,
+    "morning_report":     run_morning_report,
+    "sync_only":          run_sync_only,
+    "read_invoices":      run_read_invoices,
+    "eod_report":         run_eod_report,
+    "reconcile":          run_reconcile,
 }
 
 

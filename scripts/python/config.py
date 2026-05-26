@@ -162,6 +162,15 @@ GOOGLE_ADS_STORE_SHEET_URLS: dict = _parse_ads_sheet_urls(
 )
 
 # ---------------------------------------------------------------------------
+# Pinterest Ads spend sheets (optional — required for pull_pinterest_ads mode)
+#
+# Same URL format as GOOGLE_ADS_SHEET_URLS.
+# ---------------------------------------------------------------------------
+PINTEREST_ADS_STORE_SHEET_URLS: dict = _parse_ads_sheet_urls(
+    os.getenv("PINTEREST_ADS_SHEET_URLS", "")
+)
+
+# ---------------------------------------------------------------------------
 # Anomaly thresholds (override via env if needed)
 # ---------------------------------------------------------------------------
 THRESHOLD_ROAS_LOW:        float = float(os.getenv("THRESHOLD_ROAS_LOW",     "1.5"))

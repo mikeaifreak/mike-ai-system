@@ -22,36 +22,39 @@ REFUND_PCT_HIGH_THRESHOLD = config.THRESHOLD_REFUND_PCT_HIGH  # default 10.0
 
 UPSERT_SQL = """
 INSERT INTO daily_pl (
-    store_id, report_date, revenue, cog, adspend_google, mediabuying,
-    employee_cost, transaction_fee, profit, roas, profit_pct,
-    cog_pct, cvr_pct, cpc, refunds, refund_pct, source, synced_at
+    store_id, report_date, revenue, cog,
+    adspend_google, adspend_pinterest,
+    mediabuying, employee_cost, transaction_fee,
+    profit, roas, profit_pct, cog_pct, cvr_pct, cpc,
+    refunds, refund_pct, source, synced_at
 ) VALUES (
-    %(store_id)s, %(report_date)s, %(revenue)s, %(cog)s, %(adspend_google)s, %(mediabuying)s,
-    %(employee_cost)s, %(transaction_fee)s, %(profit)s, %(roas)s, %(profit_pct)s,
-    %(cog_pct)s, %(cvr_pct)s, %(cpc)s, %(refunds)s, %(refund_pct)s,
-    %(source)s, NOW()
+    %(store_id)s, %(report_date)s, %(revenue)s, %(cog)s,
+    %(adspend_google)s, %(adspend_pinterest)s,
+    %(mediabuying)s, %(employee_cost)s, %(transaction_fee)s,
+    %(profit)s, %(roas)s, %(profit_pct)s, %(cog_pct)s, %(cvr_pct)s, %(cpc)s,
+    %(refunds)s, %(refund_pct)s, %(source)s, NOW()
 )
 ON CONFLICT (store_id, report_date) DO UPDATE SET
-    revenue         = EXCLUDED.revenue,
-    cog             = EXCLUDED.cog,
-    -- COALESCE: preserve Google Ads API values when the sheet has no ad spend column.
-    -- google_ads_puller.py writes these at 06:45; sheet sync runs at 06:50.
-    -- If the sheet row has NULL for these fields, the existing API values survive.
-    adspend_google  = COALESCE(EXCLUDED.adspend_google, daily_pl.adspend_google),
-    mediabuying     = EXCLUDED.mediabuying,
-    employee_cost   = EXCLUDED.employee_cost,
-    transaction_fee = EXCLUDED.transaction_fee,
-    profit          = EXCLUDED.profit,
-    roas            = EXCLUDED.roas,
-    profit_pct      = EXCLUDED.profit_pct,
-    cog_pct         = EXCLUDED.cog_pct,
-    cvr_pct         = COALESCE(EXCLUDED.cvr_pct, daily_pl.cvr_pct),
-    cpc             = COALESCE(EXCLUDED.cpc,     daily_pl.cpc),
-    refunds         = EXCLUDED.refunds,
-    refund_pct      = EXCLUDED.refund_pct,
-    source          = EXCLUDED.source,
-    synced_at       = NOW(),
-    updated_at      = NOW()
+    revenue            = EXCLUDED.revenue,
+    cog                = EXCLUDED.cog,
+    -- COALESCE: pullers write ad spend to the sheet at 06:40–06:46; sync_only runs at 06:50.
+    -- If a sheet row has NULL for these fields the existing DB value survives.
+    adspend_google     = COALESCE(EXCLUDED.adspend_google,    daily_pl.adspend_google),
+    adspend_pinterest  = COALESCE(EXCLUDED.adspend_pinterest, daily_pl.adspend_pinterest),
+    mediabuying        = EXCLUDED.mediabuying,
+    employee_cost      = EXCLUDED.employee_cost,
+    transaction_fee    = EXCLUDED.transaction_fee,
+    profit             = EXCLUDED.profit,
+    roas               = EXCLUDED.roas,
+    profit_pct         = EXCLUDED.profit_pct,
+    cog_pct            = EXCLUDED.cog_pct,
+    cvr_pct            = COALESCE(EXCLUDED.cvr_pct, daily_pl.cvr_pct),
+    cpc                = COALESCE(EXCLUDED.cpc,     daily_pl.cpc),
+    refunds            = EXCLUDED.refunds,
+    refund_pct         = EXCLUDED.refund_pct,
+    source             = EXCLUDED.source,
+    synced_at          = NOW(),
+    updated_at         = NOW()
 RETURNING (xmax = 0) AS inserted;
 """
 
@@ -243,23 +246,24 @@ def process_and_store(rows: list[dict], store_id: str = "default") -> dict:
                     # Only process rows within the reprocessing window or newer
                     # (older historical rows are still inserted on first sync)
                     params = {
-                        "store_id":       store_id,
-                        "report_date":    rdate,
-                        "revenue":        row.get("revenue"),
-                        "cog":            row.get("cog"),
-                        "adspend_google": row.get("adspend_google"),
-                        "mediabuying":    row.get("mediabuying"),
-                        "employee_cost":  row.get("employee_cost"),
-                        "transaction_fee":row.get("transaction_fee"),
-                        "profit":         row.get("profit"),
-                        "roas":           row.get("roas"),
-                        "profit_pct":     row.get("profit_pct"),
-                        "cog_pct":        row.get("cog_pct"),
-                        "cvr_pct":        row.get("cvr_pct"),
-                        "cpc":            row.get("cpc"),
-                        "refunds":        row.get("refunds"),
-                        "refund_pct":     row.get("refund_pct"),
-                        "source":         "google_sheets",
+                        "store_id":           store_id,
+                        "report_date":        rdate,
+                        "revenue":            row.get("revenue"),
+                        "cog":                row.get("cog"),
+                        "adspend_google":     row.get("adspend_google"),
+                        "adspend_pinterest":  row.get("adspend_pinterest"),
+                        "mediabuying":        row.get("mediabuying"),
+                        "employee_cost":      row.get("employee_cost"),
+                        "transaction_fee":    row.get("transaction_fee"),
+                        "profit":             row.get("profit"),
+                        "roas":               row.get("roas"),
+                        "profit_pct":         row.get("profit_pct"),
+                        "cog_pct":            row.get("cog_pct"),
+                        "cvr_pct":            row.get("cvr_pct"),
+                        "cpc":                row.get("cpc"),
+                        "refunds":            row.get("refunds"),
+                        "refund_pct":         row.get("refund_pct"),
+                        "source":             "google_sheets",
                     }
 
                     cur.execute(UPSERT_SQL, params)

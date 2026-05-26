@@ -24,8 +24,9 @@ CREATE TABLE IF NOT EXISTS daily_pl (
     report_date     DATE         NOT NULL,
     revenue         NUMERIC(14,2),
     cog             NUMERIC(14,2),
-    adspend_google  NUMERIC(14,2),
-    mediabuying     NUMERIC(14,2),
+    adspend_google     NUMERIC(14,2),
+    adspend_pinterest  NUMERIC(14,2),
+    mediabuying        NUMERIC(14,2),
     employee_cost   NUMERIC(14,2),
     transaction_fee NUMERIC(14,2),
     profit          NUMERIC(14,2),
@@ -62,6 +63,15 @@ BEGIN
     ) THEN
         ALTER TABLE daily_pl
             ADD COLUMN store_id VARCHAR(100) NOT NULL DEFAULT 'default';
+    END IF;
+
+    -- Add adspend_pinterest if not present (added May 2026)
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'daily_pl' AND column_name = 'adspend_pinterest'
+    ) THEN
+        ALTER TABLE daily_pl
+            ADD COLUMN adspend_pinterest NUMERIC(14,2);
     END IF;
 
     -- Drop the old single-column unique constraint if it still exists
@@ -256,6 +266,7 @@ SELECT
     revenue,
     cog,
     adspend_google,
+    adspend_pinterest,
     mediabuying,
     employee_cost,
     transaction_fee,
@@ -283,6 +294,7 @@ SELECT
     SUM(revenue)                                       AS total_revenue,
     SUM(cog)                                           AS total_cog,
     SUM(adspend_google)                                AS total_adspend_google,
+    SUM(adspend_pinterest)                             AS total_adspend_pinterest,
     SUM(mediabuying)                                   AS total_mediabuying,
     SUM(employee_cost)                                 AS total_employee_cost,
     SUM(transaction_fee)                               AS total_transaction_fee,

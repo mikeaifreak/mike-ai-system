@@ -1,28 +1,28 @@
 """
-google_ads_puller.py — Reads Google Ads spend data from Google Sheets.
+pinterest_ads_puller.py — Reads Pinterest Ads spend from Google Sheets.
 
 Architecture:
-  1. A Google Ads Script (scripts/google-ads-script.js) runs inside each
-     Google Ads account daily at 06:00, writing per-campaign rows to a Sheet.
+  1. A Pinterest Ads Script runs inside each Pinterest Ads account daily at
+     06:00, writing per-campaign rows to a Google Sheet.
   2. Each sheet is exposed via a Google Apps Script web app URL.
   3. This module reads those URLs, aggregates spend per day, and writes
-     adspend_google(D) to the P&L sheet via sheets_writer.write_values().
-  4. sync_only (06:50) reads the full P&L row and stores in PostgreSQL.
+     adspend_pinterest to the P&L sheet via sheets_writer.write_values().
+  4. sync_only (06:50) reads the complete P&L row and stores it in PostgreSQL.
 
-Sheet column layout (written by google-ads-script.js):
+Sheet column layout (written by pinterest-ads-script.js):
   Date | Account Name | Campaign | Spend | Impressions | Clicks | Conversions | CPC
 
 Config:
-  Single store:   GOOGLE_ADS_SHEET_URLS=https://script.google.com/...
-  Multi-store:    GOOGLE_ADS_SHEET_URLS=store_nl:https://...,store_de:https://...
-  Parsed in config.py → GOOGLE_ADS_STORE_SHEET_URLS: dict[store_id, url]
+  Single store:  PINTEREST_ADS_SHEET_URLS=https://script.google.com/...
+  Multi-store:   PINTEREST_ADS_SHEET_URLS=store_nl:https://...,store_de:https://...
+  Parsed in config.py → PINTEREST_ADS_STORE_SHEET_URLS: dict[store_id, url]
 
 Pipeline position:
-  06:40  pull_shopify      ← writes revenue(B) + refunds(O) to P&L sheet
-  06:45  pull_google_ads   ← this module — writes adspend_google(D) to P&L sheet
-  06:46  pull_pinterest_ads← writes adspend_pinterest(E) to P&L sheet
-  06:50  sync_only         ← reads full P&L row, stores in PostgreSQL
-  07:00  morning_report    ← Slack report from PostgreSQL
+  06:40  pull_shopify        ← writes revenue(B) + refunds(O) to P&L sheet
+  06:45  pull_google_ads     ← writes adspend_google(D) to P&L sheet
+  06:46  pull_pinterest_ads  ← this module — writes adspend_pinterest(E)
+  06:50  sync_only           ← reads full P&L row, stores in PostgreSQL
+  07:00  morning_report      ← Slack report from PostgreSQL
 """
 
 import logging
@@ -39,9 +39,9 @@ import sheets_writer
 
 logger = logging.getLogger(__name__)
 
-REQUEST_TIMEOUT = 30  # seconds
+REQUEST_TIMEOUT = 30
 
-# Column name → canonical key (case-insensitive)
+# Column name → canonical key (case-insensitive, same pattern as google_ads_puller)
 COLUMN_MAP = {
     "date":         "report_date",
     "spend":        "spend",
@@ -50,26 +50,21 @@ COLUMN_MAP = {
     "clicks":       "clicks",
     "conversions":  "conversions",
     "cpc":          "cpc",
-    # account name / campaign are metadata, not stored in daily_pl
 }
 
 
-
-# ---------------------------------------------------------------------------
-# HTTP fetch + JSON parse (mirrors sheets_parser.py pattern)
-# ---------------------------------------------------------------------------
+# ─── HTTP fetch ───────────────────────────────────────────────────────────────
 
 def _fetch_json(url: str) -> list:
-    """Call the Apps Script web app and return a flat list of rows."""
     try:
         response = requests.get(url, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
     except requests.exceptions.Timeout:
         raise RuntimeError(
-            f"Apps Script URL did not respond within {REQUEST_TIMEOUT}s: {url}"
+            f"Pinterest Ads sheet URL did not respond in {REQUEST_TIMEOUT}s: {url}"
         )
     except requests.exceptions.RequestException as exc:
-        raise RuntimeError(f"HTTP error fetching Ads sheet: {exc}") from exc
+        raise RuntimeError(f"HTTP error fetching Pinterest Ads sheet: {exc}") from exc
 
     try:
         payload = response.json()
@@ -78,7 +73,6 @@ def _fetch_json(url: str) -> list:
             f"Response is not valid JSON. First 200 chars: {response.text[:200]!r}"
         ) from exc
 
-    # Unwrap envelope formats: {"data":[...]}, {"rows":[...]}, {"values":[...]}
     if isinstance(payload, dict):
         for key in ("data", "rows", "values", "result"):
             if key in payload and isinstance(payload[key], list):
@@ -86,44 +80,36 @@ def _fetch_json(url: str) -> list:
         raise ValueError(
             f"Unexpected dict shape — no 'data'/'rows' key. Keys: {list(payload)}"
         )
-
     if isinstance(payload, list):
         return payload
-
     raise ValueError(f"Unexpected JSON type: {type(payload).__name__}")
 
 
+# ─── Row parsing ──────────────────────────────────────────────────────────────
+
 def _parse_rows(raw_rows: list) -> list[dict]:
-    """
-    Parse the raw JSON rows from the Apps Script into normalised dicts.
-    Handles both array-of-arrays (first row = headers) and array-of-objects.
-    """
+    """Handle both array-of-arrays (first row = headers) and array-of-objects."""
     if not raw_rows:
         return []
 
     first = raw_rows[0]
 
     if isinstance(first, list):
-        # Array-of-arrays: first row is headers
-        header_row = first
-        col_map = {}  # index → canonical key
-        for idx, cell in enumerate(header_row):
+        col_map = {}
+        for idx, cell in enumerate(first):
             key = COLUMN_MAP.get(str(cell).strip().lower())
             if key:
                 col_map[idx] = key
-
         out = []
         for row in raw_rows[1:]:
             if not any(str(c).strip() for c in row):
                 continue
-            record = {}
-            for idx, key in col_map.items():
-                record[key] = row[idx] if idx < len(row) else None
+            record = {key: row[idx] if idx < len(row) else None
+                      for idx, key in col_map.items()}
             out.append(record)
         return out
 
     if isinstance(first, dict):
-        # Array-of-objects
         out = []
         for obj in raw_rows:
             record = {}
@@ -147,10 +133,7 @@ def _to_float(val) -> Optional[float]:
 
 
 def _aggregate_by_date(rows: list[dict]) -> dict[date, dict]:
-    """
-    Sum spend, clicks, impressions, conversions across all campaigns per date.
-    CPC and CVR% are recomputed from the aggregated totals for accuracy.
-    """
+    """Sum spend, clicks, impressions, conversions across all campaigns per date."""
     from datetime import datetime
 
     DATE_FORMATS = ["%Y-%m-%d", "%d/%m/%Y", "%d.%m.%Y", "%m/%d/%Y"]
@@ -163,13 +146,23 @@ def _aggregate_by_date(rows: list[dict]) -> dict[date, dict]:
         if not raw_date:
             continue
 
+        # Handle ISO datetime strings from Apps Script
+        s = str(raw_date).strip()
         parsed_date = None
-        for fmt in DATE_FORMATS:
+        if "T" in s:
             try:
-                parsed_date = datetime.strptime(str(raw_date).strip(), fmt).date()
-                break
+                parsed_date = datetime.fromisoformat(
+                    s.replace("Z", "+00:00")
+                ).date()
             except ValueError:
-                continue
+                pass
+        if parsed_date is None:
+            for fmt in DATE_FORMATS:
+                try:
+                    parsed_date = datetime.strptime(s, fmt).date()
+                    break
+                except ValueError:
+                    continue
         if parsed_date is None:
             logger.warning("Could not parse date: %r — skipping row", raw_date)
             continue
@@ -182,36 +175,33 @@ def _aggregate_by_date(rows: list[dict]) -> dict[date, dict]:
 
     result = {}
     for dt, d in totals.items():
-        clicks = d["clicks"]
-        spend  = d["spend"]
+        spend = d["spend"]
         result[dt] = {
-            "adspend_google": round(spend, 4) if spend else None,
-            "cpc":     round(spend / clicks, 4) if clicks > 0 else None,
-            "cvr_pct": round((d["conversions"] / clicks) * 100, 4) if clicks > 0 else None,
+            "adspend_pinterest": round(spend, 4) if spend else None,
         }
     return result
 
 
-# ---------------------------------------------------------------------------
-# Sheet write
-# ---------------------------------------------------------------------------
+# ─── Sheet write ──────────────────────────────────────────────────────────────
 
 def _write_to_sheet(store_id: str, daily: dict[date, dict]) -> int:
-    """Write adspend_google(D) to the P&L sheet for each date."""
+    """Write adspend_pinterest to the P&L sheet for each date."""
     pl_url = config.GOOGLE_SCRIPT_URL
     count = 0
     for report_date, metrics in daily.items():
-        adspend = metrics.get("adspend_google")
+        adspend = metrics.get("adspend_pinterest")
         if adspend is None:
             continue
         ok = sheets_writer.write_values(
             report_date, store_id, pl_url,
-            adspend_google=adspend,
+            adspend_pinterest=adspend,
         )
         if ok:
             count += 1
     return count
 
+
+# ─── Monitoring ───────────────────────────────────────────────────────────────
 
 def _log_agent_run(
     store_id: str,
@@ -232,13 +222,13 @@ def _log_agent_run(
                     ) VALUES (%s, %s, 'cron', %s, %s, %s, %s, %s, NOW())
                     """,
                     (
-                        f"google_ads_puller.{store_id}",
-                        "pull_google_ads",
+                        f"pinterest_ads_puller.{store_id}",
+                        "pull_pinterest_ads",
                         status,
                         rows_processed,
                         duration_ms,
                         error_message,
-                        "google_ads_script",
+                        "pinterest_ads_script",
                     ),
                 )
                 conn.commit()
@@ -246,37 +236,37 @@ def _log_agent_run(
         logger.warning("agent_runs log failed: %s", log_exc)
 
 
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
+# ─── Public entry point ───────────────────────────────────────────────────────
 
 def pull_all_stores() -> None:
     """
-    Fetch ad spend from each store's Apps Script URL and upsert into daily_pl.
+    Fetch Pinterest Ads spend from each store's Apps Script URL and write
+    adspend_pinterest(E) to the corresponding P&L sheet row.
 
-    Reads GOOGLE_ADS_STORE_SHEET_URLS from config (dict[store_id → url]).
-    Skips gracefully if the var is not set — the rest of the pipeline continues.
+    Skips gracefully if PINTEREST_ADS_SHEET_URLS is not set — the rest of
+    the pipeline continues.
 
-    To add a new store:
-      1. Mike installs google-ads-script.js in that Google Ads account
-      2. The script writes to a new Google Sheet
+    To add a store:
+      1. Create a Pinterest Ads Script for that account (similar to
+         scripts/pinterest-ads-script.js)
+      2. The script writes daily rows to a Google Sheet
       3. Deploy an Apps Script web app on that sheet
-      4. Add the URL to GOOGLE_ADS_SHEET_URLS in .env
+      4. Add the URL to PINTEREST_ADS_SHEET_URLS in .env
     """
-    if not config.GOOGLE_ADS_STORE_SHEET_URLS:
+    if not config.PINTEREST_ADS_STORE_SHEET_URLS:
         logger.warning(
-            "GOOGLE_ADS_SHEET_URLS is not set — skipping Google Ads pull. "
-            "Set it in .env once Mike has installed google-ads-script.js."
+            "PINTEREST_ADS_SHEET_URLS is not set — skipping Pinterest Ads pull. "
+            "Set it in .env once the Pinterest Ads Script is installed."
         )
         return
 
     yesterday = date.today() - timedelta(days=1)
     logger.info(
-        "Google Ads pull | date=%s | stores=%s",
-        yesterday, list(config.GOOGLE_ADS_STORE_SHEET_URLS.keys()),
+        "Pinterest Ads pull | date=%s | stores=%s",
+        yesterday, list(config.PINTEREST_ADS_STORE_SHEET_URLS.keys()),
     )
 
-    for store_id, url in config.GOOGLE_ADS_STORE_SHEET_URLS.items():
+    for store_id, url in config.PINTEREST_ADS_STORE_SHEET_URLS.items():
         t0 = time.monotonic()
         logger.info("  [%s] fetching: %s", store_id, url)
 
@@ -289,9 +279,9 @@ def pull_all_stores() -> None:
 
             for dt, m in sorted(by_date.items()):
                 logger.info(
-                    "  [%s] %s  spend=$%.2f",
+                    "  [%s] %s  spend_pinterest=$%.2f",
                     store_id, dt,
-                    m["adspend_google"] or 0,
+                    m["adspend_pinterest"] or 0,
                 )
 
             logger.info(
