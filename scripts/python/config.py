@@ -17,10 +17,9 @@ def _require(key: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Google Sheets
+# Google Sheets (via Apps Script web app)
 # ---------------------------------------------------------------------------
-GOOGLE_SHEET_ID: str = _require("GOOGLE_SHEET_ID")
-GOOGLE_SERVICE_ACCOUNT_JSON: str = _require("GOOGLE_SERVICE_ACCOUNT_JSON")
+GOOGLE_SCRIPT_URL: str = _require("GOOGLE_SCRIPT_URL")
 
 # ---------------------------------------------------------------------------
 # PostgreSQL

@@ -1,47 +1,66 @@
 """
-sheets_parser.py — Fetches and parses the P&L Google Sheet into clean dicts.
+sheets_parser.py — Fetches P&L data via Google Apps Script web app URL.
 
-Column layout (Sheet1):
-  Spalte 1 (date) | Revenue | COG | Adspend Google | Mediabuying | EMPLOYEE |
-  Transaction fee | Profit | ROAS | Profit% | COG% | CVR% | CPC | Refunds | Refund%
+The script URL is set in .env as GOOGLE_SCRIPT_URL.
+The Apps Script must be deployed as a web app with "Anyone" access and
+return the sheet contents as JSON — either:
+
+  Option A — array of arrays (first row = headers):
+    [["Date","Revenue","COG",...], ["01.01.2025",10000,3000,...], ...]
+
+  Option B — array of objects:
+    [{"date":"01.01.2025","revenue":10000,"cog":3000,...}, ...]
+
+  Option C — wrapped in an envelope:
+    {"data": [...rows...], "success": true}
+    {"rows": [...rows...]}
+
+All three formats are detected and handled automatically.
 """
 
-import re
 import logging
+import re
 from datetime import datetime, date
 from typing import Optional
 
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
+import requests
 
 import config
 
 logger = logging.getLogger(__name__)
 
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+REQUEST_TIMEOUT = 30  # seconds
 
-# Maps raw sheet header text → canonical internal name
+# Maps raw sheet header text → canonical internal name (case-insensitive)
 COLUMN_MAP = {
     "spalte 1":       "report_date",
+    "datum":          "report_date",
     "date":           "report_date",
     "revenue":        "revenue",
     "cog":            "cog",
     "adspend google": "adspend_google",
+    "ad spend":       "adspend_google",
+    "adspend":        "adspend_google",
     "mediabuying":    "mediabuying",
+    "media buying":   "mediabuying",
     "employee":       "employee_cost",
+    "employee cost":  "employee_cost",
     "transaction fee":"transaction_fee",
+    "transaction":    "transaction_fee",
     "profit":         "profit",
     "roas":           "roas",
     "profit%":        "profit_pct",
+    "profit_pct":     "profit_pct",
     "cog%":           "cog_pct",
+    "cog_pct":        "cog_pct",
     "cvr%":           "cvr_pct",
+    "cvr_pct":        "cvr_pct",
     "cpc":            "cpc",
     "refunds":        "refunds",
     "refund%":        "refund_pct",
+    "refund_pct":     "refund_pct",
 }
 
-# All known date formats in the sheet
 DATE_FORMATS = [
     "%Y-%m-%d",
     "%d.%m.%Y",
@@ -54,13 +73,9 @@ DATE_FORMATS = [
 ]
 
 
-def _build_service():
-    creds = Credentials.from_service_account_file(
-        config.GOOGLE_SERVICE_ACCOUNT_JSON,
-        scopes=SCOPES,
-    )
-    return build("sheets", "v4", credentials=creds, cache_discovery=False)
-
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
 
 def _parse_date(raw: str) -> Optional[date]:
     raw = raw.strip()
@@ -74,7 +89,7 @@ def _parse_date(raw: str) -> Optional[date]:
 
 
 def _to_float(raw) -> Optional[float]:
-    if raw is None or str(raw).strip() == "":
+    if raw is None or str(raw).strip() in ("", "-", "—"):
         return None
     cleaned = re.sub(r"[%,$€£\s]", "", str(raw))
     try:
@@ -83,67 +98,56 @@ def _to_float(raw) -> Optional[float]:
         return None
 
 
-def _map_headers(header_row: list) -> dict:
-    """Return {col_index: canonical_name} for the columns we care about."""
-    mapping = {}
-    for idx, cell in enumerate(header_row):
-        normalised = str(cell).strip().lower()
-        canonical = COLUMN_MAP.get(normalised)
-        if canonical:
-            mapping[idx] = canonical
-    return mapping
+def _normalise(text: str) -> str:
+    return str(text).strip().lower()
 
 
-def fetch_pl_data() -> list[dict]:
+def _extract_rows(payload) -> list:
     """
-    Authenticate with Google Sheets and return a list of dicts — one per
-    data row — with column names matching the daily_pl schema.
-
-    Always re-fetches the full sheet; the caller decides how much to upsert.
+    Unwrap whatever structure the Apps Script returns into a flat list.
+    Handles: raw list, {"data": [...]}, {"rows": [...]}, {"values": [...]}.
     """
-    logger.info("Fetching P&L data from Google Sheets (sheet_id=%s)", config.GOOGLE_SHEET_ID)
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("data", "rows", "values", "result"):
+            if key in payload and isinstance(payload[key], list):
+                return payload[key]
+    raise ValueError(
+        f"Unexpected JSON shape from Apps Script. "
+        f"Top-level type: {type(payload).__name__}. "
+        f"Expected a list or a dict with a 'data'/'rows' key."
+    )
 
-    try:
-        service = _build_service()
-        sheet_range = f"{config.SHEET_TAB_NAME}!A1:Z2000"
-        result = (
-            service.spreadsheets()
-            .values()
-            .get(spreadsheetId=config.GOOGLE_SHEET_ID, range=sheet_range)
-            .execute()
-        )
-    except HttpError as exc:
-        logger.error("Google Sheets API error: %s", exc)
-        raise
 
-    raw_rows = result.get("values", [])
-    if not raw_rows:
-        logger.warning("Sheet returned no data.")
+def _parse_array_of_arrays(rows: list) -> list[dict]:
+    """Handle [[header,...], [val,...], ...] format."""
+    if not rows:
         return []
 
-    # First non-empty row is the header
-    header_row = raw_rows[0]
-    col_map = _map_headers(header_row)
+    header_row = rows[0]
+    col_map = {}  # index → canonical name
+    for idx, cell in enumerate(header_row):
+        canonical = COLUMN_MAP.get(_normalise(cell))
+        if canonical:
+            col_map[idx] = canonical
 
     if "report_date" not in col_map.values():
         raise ValueError(
-            "Could not find a date column in the sheet headers. "
-            f"Headers found: {header_row}"
+            f"No date column found in sheet headers. "
+            f"Headers seen: {header_row}. "
+            f"Expected one of: {[k for k,v in COLUMN_MAP.items() if v == 'report_date']}"
         )
 
-    date_col_idx = next(i for i, name in col_map.items() if name == "report_date")
-
-    rows_out = []
+    out = []
     skipped = 0
-
-    for row_num, raw_row in enumerate(raw_rows[1:], start=2):
-        # Skip completely empty rows
+    for row_num, raw_row in enumerate(rows[1:], start=2):
         if not any(str(c).strip() for c in raw_row):
             skipped += 1
             continue
 
-        # Skip rows where the date cell is blank or looks like another header
-        date_raw = raw_row[date_col_idx] if date_col_idx < len(raw_row) else ""
+        date_idx = next(i for i, n in col_map.items() if n == "report_date")
+        date_raw = raw_row[date_idx] if date_idx < len(raw_row) else ""
         if not str(date_raw).strip():
             skipped += 1
             continue
@@ -155,17 +159,96 @@ def fetch_pl_data() -> list[dict]:
             continue
 
         record: dict = {"report_date": parsed_date}
-
-        for col_idx, canonical in col_map.items():
+        for idx, canonical in col_map.items():
             if canonical == "report_date":
                 continue
-            raw_val = raw_row[col_idx] if col_idx < len(raw_row) else None
+            raw_val = raw_row[idx] if idx < len(raw_row) else None
             record[canonical] = _to_float(raw_val)
+        out.append(record)
 
-        rows_out.append(record)
+    logger.info("Parsed %d rows (%d skipped).", len(out), skipped)
+    return out
 
-    logger.info(
-        "Parsed %d data rows from sheet (%d rows skipped).",
-        len(rows_out), skipped,
-    )
-    return rows_out
+
+def _parse_array_of_objects(rows: list) -> list[dict]:
+    """Handle [{date:..., revenue:...}, ...] format."""
+    out = []
+    skipped = 0
+    for row_num, obj in enumerate(rows, start=1):
+        if not isinstance(obj, dict):
+            skipped += 1
+            continue
+
+        # Map object keys → canonical names
+        record: dict = {}
+        for raw_key, raw_val in obj.items():
+            canonical = COLUMN_MAP.get(_normalise(raw_key))
+            if canonical:
+                if canonical == "report_date":
+                    parsed = _parse_date(str(raw_val))
+                    if parsed is None:
+                        break
+                    record["report_date"] = parsed
+                else:
+                    record[canonical] = _to_float(raw_val)
+
+        if "report_date" not in record:
+            skipped += 1
+            continue
+        out.append(record)
+
+    logger.info("Parsed %d rows (%d skipped).", len(out), skipped)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def fetch_pl_data() -> list[dict]:
+    """
+    Call the Google Apps Script web app and return a list of dicts —
+    one per data row — with column names matching the daily_pl schema.
+    """
+    url = config.GOOGLE_SCRIPT_URL
+    logger.info("Fetching P&L data from Apps Script: %s", url)
+
+    try:
+        response = requests.get(url, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+    except requests.exceptions.Timeout:
+        raise RuntimeError(
+            f"Google Apps Script did not respond within {REQUEST_TIMEOUT}s. "
+            "Check that the script is deployed and accessible."
+        )
+    except requests.exceptions.RequestException as exc:
+        raise RuntimeError(f"HTTP error fetching Apps Script: {exc}") from exc
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ValueError(
+            f"Apps Script response is not valid JSON. "
+            f"First 200 chars: {response.text[:200]!r}"
+        ) from exc
+
+    rows = _extract_rows(payload)
+    logger.info("Received %d rows from Apps Script.", len(rows))
+
+    if not rows:
+        logger.warning("Apps Script returned an empty list.")
+        return []
+
+    # Detect format: array-of-arrays vs array-of-objects
+    first = rows[0]
+    if isinstance(first, list):
+        logger.debug("Detected array-of-arrays format.")
+        return _parse_array_of_arrays(rows)
+    elif isinstance(first, dict):
+        logger.debug("Detected array-of-objects format.")
+        return _parse_array_of_objects(rows)
+    else:
+        raise ValueError(
+            f"Unexpected row type in Apps Script response: {type(first).__name__}. "
+            "Expected list or dict."
+        )
