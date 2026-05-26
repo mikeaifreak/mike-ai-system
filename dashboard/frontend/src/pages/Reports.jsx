@@ -27,9 +27,9 @@ export default function Reports() {
   useEffect(() => {
     async function fetchAll() {
       const [m, w, mo] = await Promise.allSettled([getMTD(), getWeekly(), getMonthly()])
-      if (m.status === 'fulfilled') setMtd(m.value?.mtd || m.value || null)
-      if (w.status === 'fulfilled') setWeekly(w.value?.weeks || w.value || [])
-      if (mo.status === 'fulfilled') setMonthly(mo.value?.months || mo.value || [])
+      if (m.status === 'fulfilled') setMtd(m.value?.data || null)
+      if (w.status === 'fulfilled') setWeekly(w.value?.data || [])
+      if (mo.status === 'fulfilled') setMonthly(mo.value?.data || [])
     }
     fetchAll()
   }, [])

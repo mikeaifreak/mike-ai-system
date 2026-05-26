@@ -44,14 +44,14 @@ export default function Dashboard() {
       ])
       if (m.status === 'fulfilled') setMetrics(m.value)
       if (c.status === 'fulfilled') setChartData(c.value?.data || c.value || [])
-      if (a.status === 'fulfilled') setAlerts(a.value?.alerts || a.value || [])
+      if (a.status === 'fulfilled') setAlerts(a.value?.data || [])
     } catch (_) {}
   }
 
   async function fetchLogs() {
     try {
       const data = await getAgentLogs(20)
-      setLogs(data?.logs || data || [])
+      setLogs(data?.data || [])
     } catch (_) {}
   }
 

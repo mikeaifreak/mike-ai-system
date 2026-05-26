@@ -75,8 +75,8 @@ export default function Finance() {
     try {
       const data = await getFinanceTable(RANGE_API_MAP[range] || range.toLowerCase())
       setTableData({
-        rows: data?.rows || data?.data || [],
-        totals: data?.totals || null
+        rows: data?.data?.rows || [],
+        totals: data?.data?.totals || null
       })
     } catch (_) {
       setTableData({ rows: [], totals: null })

@@ -51,10 +51,10 @@ export default function MissionControl() {
         getAgentLogs(100)
       ])
       if (s.status === 'fulfilled') {
-        setAgentStatus(s.value?.agents || s.value || [])
+        setAgentStatus(s.value?.data || [])
       }
       if (l.status === 'fulfilled') {
-        setLogs(l.value?.logs || l.value || [])
+        setLogs(l.value?.data || [])
       }
     } catch (_) {}
   }
