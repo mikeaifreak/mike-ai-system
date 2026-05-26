@@ -85,6 +85,14 @@ WHATSAPP_RECIPIENT_NUMBER:   str = _require("WHATSAPP_RECIPIENT_NUMBER")
 WHATSAPP_API_VERSION:        str = os.getenv("WHATSAPP_API_VERSION", "v18.0")
 
 # ---------------------------------------------------------------------------
+# Shopify Admin REST API (optional — required for pull_shopify mode)
+# ---------------------------------------------------------------------------
+SHOPIFY_STORE_URL:  str = os.getenv("SHOPIFY_STORE_URL", "")
+SHOPIFY_API_TOKEN:  str = os.getenv("SHOPIFY_API_TOKEN", "")
+SHOPIFY_CLIENT_ID:  str = os.getenv("SHOPIFY_CLIENT_ID", "")
+SHOPIFY_CLIENT_SECRET: str = os.getenv("SHOPIFY_CLIENT_SECRET", "")
+
+# ---------------------------------------------------------------------------
 # Google Ads spend sheets (optional — required for pull_google_ads mode)
 #
 # Mike installs scripts/google-ads-script.js in each Google Ads account.

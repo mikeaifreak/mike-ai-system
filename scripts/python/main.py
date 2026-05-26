@@ -37,6 +37,7 @@ from slack_reporter import send_daily_report, send_anomaly_alert
 from whatsapp_alerts import send_eod_summary
 from google_ads_puller import pull_all_stores as _pull_google_ads_stores
 from pinterest_ads_puller import pull_all_stores as _pull_pinterest_ads_stores
+import shopify_puller
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -101,14 +102,16 @@ def run_morning_report() -> None:
 
 
 def run_pull_shopify() -> None:
-    """Pull yesterday's revenue + refunds from Shopify → write to P&L sheet (B, O)."""
+    """Pull revenue + refunds from Shopify (7-day lookback) → write to P&L sheet (B, O)."""
     logger.info(">>> MODE: pull_shopify")
-    # Shopify integration not yet configured — skipping gracefully.
-    # Will be implemented when SHOPIFY_API_KEY and SHOPIFY_STORE_URLS are set in .env.
-    logger.warning(
-        "pull_shopify: Shopify credentials not yet configured. "
-        "Set SHOPIFY_API_KEY and SHOPIFY_STORE_URL in .env to activate."
-    )
+    result = shopify_puller.run()
+    if result:
+        logger.info(
+            "Shopify result: orders=%d  revenue=%.2f  refunds=%.2f",
+            result.get("orders", 0),
+            result.get("revenue", 0.0),
+            result.get("refunds", 0.0),
+        )
 
 
 def run_pull_google_ads() -> None:
