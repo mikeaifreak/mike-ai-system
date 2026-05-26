@@ -42,8 +42,8 @@ export default function Dashboard() {
         getChartData(30),
         getRecentAlerts(8)
       ])
-      if (m.status === 'fulfilled') setMetrics(m.value)
-      if (c.status === 'fulfilled') setChartData(c.value?.data || c.value || [])
+      if (m.status === 'fulfilled') setMetrics(m.value?.data || null)
+      if (c.status === 'fulfilled') setChartData(c.value?.data || [])
       if (a.status === 'fulfilled') setAlerts(a.value?.data || [])
     } catch (_) {}
   }
