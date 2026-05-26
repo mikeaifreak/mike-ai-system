@@ -1,0 +1,71 @@
+# =============================================================================
+# Mike AI System — .gitignore
+# NEVER commit credentials, secrets, or local state.
+# =============================================================================
+
+# --- Credentials & secrets ---
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+*.pfx
+service-account.json
+*service-account*.json
+*credentials*.json
+secrets/
+
+# --- n8n local data ---
+n8n/.n8n/
+n8n/data/
+n8n/logs/
+n8n/.cache/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+*.cover
+*.log
+
+# --- Node / n8n local install ---
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.pnp/
+.pnp.js
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+*~
+*.swp
+*.swo
+
+# --- Editor ---
+.vscode/
+.idea/
+*.iml
+
+# --- Temp exports (use n8n/workflows/ instead) ---
+exports/
+tmp/
+temp/

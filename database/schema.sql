@@ -1,0 +1,251 @@
+-- =============================================================================
+-- Finance Controller AI System — PostgreSQL Schema
+-- Client: Mike (e-commerce/dropshipping)
+-- =============================================================================
+
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- ---------------------------------------------------------------------------
+-- Core P&L table — one row per calendar day
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS daily_pl (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    report_date     DATE        NOT NULL UNIQUE,
+    revenue         NUMERIC(14,2),
+    cog             NUMERIC(14,2),
+    adspend_google  NUMERIC(14,2),
+    mediabuying     NUMERIC(14,2),
+    employee_cost   NUMERIC(14,2),
+    transaction_fee NUMERIC(14,2),
+    profit          NUMERIC(14,2),
+    roas            NUMERIC(8,4),
+    profit_pct      NUMERIC(8,4),
+    cog_pct         NUMERIC(8,4),
+    cvr_pct         NUMERIC(8,4),
+    cpc             NUMERIC(8,4),
+    refunds         NUMERIC(14,2),
+    refund_pct      NUMERIC(8,4),
+    source          VARCHAR(100) DEFAULT 'google_sheets',
+    synced_at       TIMESTAMPTZ  DEFAULT NOW(),
+    created_at      TIMESTAMPTZ  DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_pl_report_date ON daily_pl (report_date DESC);
+
+-- ---------------------------------------------------------------------------
+-- Trigger: auto-update updated_at on daily_pl
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_daily_pl_updated_at ON daily_pl;
+CREATE TRIGGER trg_daily_pl_updated_at
+    BEFORE UPDATE ON daily_pl
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ---------------------------------------------------------------------------
+-- Weekly summary — auto-calculated aggregates per ISO week
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS weekly_summary (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    week_start      DATE        NOT NULL,
+    week_end        DATE        NOT NULL,
+    iso_year        INTEGER     NOT NULL,
+    iso_week        INTEGER     NOT NULL,
+    total_revenue   NUMERIC(14,2),
+    total_cog       NUMERIC(14,2),
+    total_adspend   NUMERIC(14,2),
+    total_mediabuying NUMERIC(14,2),
+    total_employee  NUMERIC(14,2),
+    total_transaction_fee NUMERIC(14,2),
+    total_profit    NUMERIC(14,2),
+    avg_roas        NUMERIC(8,4),
+    avg_profit_pct  NUMERIC(8,4),
+    avg_cog_pct     NUMERIC(8,4),
+    avg_cvr_pct     NUMERIC(8,4),
+    avg_cpc         NUMERIC(8,4),
+    total_refunds   NUMERIC(14,2),
+    avg_refund_pct  NUMERIC(8,4),
+    days_in_week    INTEGER,
+    calculated_at   TIMESTAMPTZ  DEFAULT NOW(),
+    UNIQUE (iso_year, iso_week)
+);
+
+CREATE INDEX IF NOT EXISTS idx_weekly_summary_week ON weekly_summary (iso_year DESC, iso_week DESC);
+
+-- ---------------------------------------------------------------------------
+-- Monthly summary — auto-calculated aggregates per calendar month
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS monthly_summary (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    year            INTEGER     NOT NULL,
+    month           INTEGER     NOT NULL,
+    month_start     DATE        NOT NULL,
+    month_end       DATE        NOT NULL,
+    total_revenue   NUMERIC(14,2),
+    total_cog       NUMERIC(14,2),
+    total_adspend   NUMERIC(14,2),
+    total_mediabuying NUMERIC(14,2),
+    total_employee  NUMERIC(14,2),
+    total_transaction_fee NUMERIC(14,2),
+    total_profit    NUMERIC(14,2),
+    avg_roas        NUMERIC(8,4),
+    avg_profit_pct  NUMERIC(8,4),
+    avg_cog_pct     NUMERIC(8,4),
+    avg_cvr_pct     NUMERIC(8,4),
+    avg_cpc         NUMERIC(8,4),
+    total_refunds   NUMERIC(14,2),
+    avg_refund_pct  NUMERIC(8,4),
+    days_in_month   INTEGER,
+    calculated_at   TIMESTAMPTZ  DEFAULT NOW(),
+    UNIQUE (year, month)
+);
+
+CREATE INDEX IF NOT EXISTS idx_monthly_summary_ym ON monthly_summary (year DESC, month DESC);
+
+-- ---------------------------------------------------------------------------
+-- Reconciliation log — every reconciliation run
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS reconciliation_log (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    run_date        DATE        NOT NULL DEFAULT CURRENT_DATE,
+    sheet_row_count INTEGER,
+    db_row_count    INTEGER,
+    mismatches      INTEGER     DEFAULT 0,
+    late_invoices   INTEGER     DEFAULT 0,
+    status          VARCHAR(20) CHECK (status IN ('ok', 'warning', 'error')) DEFAULT 'ok',
+    notes           TEXT,
+    agent_name      VARCHAR(100),
+    model_used      VARCHAR(100),
+    created_at      TIMESTAMPTZ  DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_reconciliation_run_date ON reconciliation_log (run_date DESC);
+
+-- ---------------------------------------------------------------------------
+-- Alerts log — every Slack/WhatsApp alert sent
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS alerts_log (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    alert_type      VARCHAR(50) NOT NULL,  -- 'daily_report', 'anomaly', 'eod_summary', etc.
+    channel         VARCHAR(20) NOT NULL,  -- 'slack', 'whatsapp'
+    recipient       VARCHAR(200),
+    trigger_metric  VARCHAR(100),
+    trigger_value   NUMERIC(14,4),
+    threshold_value NUMERIC(14,4),
+    message_preview TEXT,
+    delivered       BOOLEAN     DEFAULT FALSE,
+    error_message   TEXT,
+    sent_at         TIMESTAMPTZ  DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_log_sent_at ON alerts_log (sent_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alerts_log_type    ON alerts_log (alert_type);
+
+-- ---------------------------------------------------------------------------
+-- Agent runs — monitoring table for every pipeline execution
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_name      VARCHAR(100) NOT NULL,
+    workflow_name   VARCHAR(200),
+    trigger_type    VARCHAR(50),  -- 'cron', 'manual', 'webhook', 'n8n'
+    status          VARCHAR(20) CHECK (status IN ('running', 'success', 'error', 'warning')) DEFAULT 'running',
+    started_at      TIMESTAMPTZ  DEFAULT NOW(),
+    finished_at     TIMESTAMPTZ,
+    duration_ms     INTEGER,
+    rows_processed  INTEGER      DEFAULT 0,
+    rows_inserted   INTEGER      DEFAULT 0,
+    rows_updated    INTEGER      DEFAULT 0,
+    tokens_used     INTEGER,
+    error_message   TEXT,
+    model           VARCHAR(100),
+    metadata        JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_runs_started  ON agent_runs (started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_status   ON agent_runs (status);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_agent    ON agent_runs (agent_name);
+
+-- ---------------------------------------------------------------------------
+-- Shopify orders — stub table for System 2 integration
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS shopify_orders (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    shopify_order_id VARCHAR(100) UNIQUE,
+    order_date      DATE,
+    order_number    VARCHAR(100),
+    customer_email  VARCHAR(300),
+    total_price     NUMERIC(14,2),
+    subtotal_price  NUMERIC(14,2),
+    total_discounts NUMERIC(14,2),
+    total_tax       NUMERIC(14,2),
+    financial_status VARCHAR(50),
+    fulfillment_status VARCHAR(50),
+    currency        VARCHAR(10),
+    line_items      JSONB,
+    raw_payload     JSONB,
+    synced_at       TIMESTAMPTZ  DEFAULT NOW(),
+    created_at      TIMESTAMPTZ  DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_shopify_orders_date   ON shopify_orders (order_date DESC);
+CREATE INDEX IF NOT EXISTS idx_shopify_orders_status ON shopify_orders (financial_status);
+
+-- ---------------------------------------------------------------------------
+-- VIEW: latest_7_days — last 7 days of P&L (used by WhatsApp AI agent)
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW latest_7_days AS
+SELECT
+    report_date,
+    revenue,
+    cog,
+    adspend_google,
+    mediabuying,
+    employee_cost,
+    transaction_fee,
+    profit,
+    roas,
+    profit_pct,
+    cog_pct,
+    cvr_pct,
+    cpc,
+    refunds,
+    refund_pct,
+    synced_at
+FROM daily_pl
+WHERE report_date >= CURRENT_DATE - INTERVAL '7 days'
+ORDER BY report_date DESC;
+
+-- ---------------------------------------------------------------------------
+-- VIEW: mtd_summary — month-to-date aggregates (used in daily Slack report)
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE VIEW mtd_summary AS
+SELECT
+    DATE_TRUNC('month', CURRENT_DATE)::DATE           AS month_start,
+    CURRENT_DATE                                       AS through_date,
+    COUNT(*)                                           AS days_counted,
+    SUM(revenue)                                       AS total_revenue,
+    SUM(cog)                                           AS total_cog,
+    SUM(adspend_google)                                AS total_adspend_google,
+    SUM(mediabuying)                                   AS total_mediabuying,
+    SUM(employee_cost)                                 AS total_employee_cost,
+    SUM(transaction_fee)                               AS total_transaction_fee,
+    SUM(profit)                                        AS total_profit,
+    ROUND(AVG(roas), 4)                                AS avg_roas,
+    ROUND(
+        CASE WHEN SUM(revenue) > 0
+             THEN (SUM(profit) / SUM(revenue)) * 100
+             ELSE 0 END, 4
+    )                                                  AS profit_pct,
+    SUM(refunds)                                       AS total_refunds,
+    ROUND(AVG(refund_pct), 4)                          AS avg_refund_pct
+FROM daily_pl
+WHERE report_date >= DATE_TRUNC('month', CURRENT_DATE)
+  AND report_date <= CURRENT_DATE;

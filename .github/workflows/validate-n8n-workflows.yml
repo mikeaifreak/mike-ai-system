@@ -1,0 +1,124 @@
+name: Validate n8n Workflow JSONs
+
+on:
+  push:
+    paths:
+      - "n8n/workflows/**/*.json"
+  pull_request:
+    paths:
+      - "n8n/workflows/**/*.json"
+
+jobs:
+  validate:
+    name: Validate workflow JSON files
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate all workflow JSONs
+        run: |
+          python3 - << 'EOF'
+          import json, sys, pathlib, re
+
+          REQUIRED_KEYS = {"id", "name", "nodes", "connections", "settings"}
+          errors = []
+          warnings = []
+
+          workflow_files = list(pathlib.Path("n8n/workflows").rglob("*.json"))
+          print(f"Checking {len(workflow_files)} workflow files...\n")
+
+          for path in sorted(workflow_files):
+            # --- Parse JSON ---
+            try:
+              data = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as e:
+              errors.append(f"INVALID JSON:  {path} — {e}")
+              continue
+
+            name = data.get("name", str(path))
+
+            # --- Required top-level keys ---
+            missing = REQUIRED_KEYS - set(data.keys())
+            if missing:
+              errors.append(f"MISSING KEYS:  {path} — {missing}")
+
+            # --- Must have at least one node ---
+            nodes = data.get("nodes", [])
+            if len(nodes) == 0:
+              warnings.append(f"EMPTY NODES:   {path}")
+
+            # --- Node IDs must be unique within the workflow ---
+            node_ids = [n.get("id") for n in nodes if n.get("id")]
+            if len(node_ids) != len(set(node_ids)):
+              errors.append(f"DUPLICATE IDS: {path}")
+
+            # --- All connection targets must exist as node names ---
+            node_names = {n.get("name") for n in nodes}
+            connections = data.get("connections", {})
+            for src, outputs in connections.items():
+              for branch in outputs.get("main", []):
+                for edge in (branch or []):
+                  target = edge.get("node")
+                  if target and target not in node_names:
+                    errors.append(f"BROKEN CONN:   {path} — '{src}' → '{target}' (target not found)")
+
+            # --- Warn if errorWorkflow points at a non-existent ID ---
+            err_wf = data.get("settings", {}).get("errorWorkflow")
+            if err_wf and err_wf not in ["shared-global-error-handler-001"]:
+              warnings.append(f"UNKNOWN ERROR WF: {path} — errorWorkflow={err_wf}")
+
+            print(f"  ✓ {path.relative_to('n8n/workflows')}  ({len(nodes)} nodes)")
+
+          print()
+          if warnings:
+            print("WARNINGS:")
+            for w in warnings:
+              print(f"  ⚠  {w}")
+            print()
+
+          if errors:
+            print("ERRORS:")
+            for e in errors:
+              print(f"  ✗  {e}")
+            sys.exit(1)
+          else:
+            print(f"All {len(workflow_files)} workflow files are valid.")
+          EOF
+
+      - name: Check for hardcoded secrets
+        run: |
+          # Fail if any workflow JSON contains what looks like a real credential
+          python3 - << 'EOF'
+          import pathlib, re, sys
+
+          PATTERNS = [
+            (r'xoxb-[0-9A-Za-z\-]{20,}',          "Slack bot token"),
+            (r'sk-ant-[A-Za-z0-9\-_]{20,}',        "Anthropic API key"),
+            (r'sk-[A-Za-z0-9]{20,}',               "OpenAI API key"),
+            (r'ghp_[A-Za-z0-9]{36}',               "GitHub PAT"),
+            (r'EAA[A-Za-z0-9]{20,}',               "Meta/WhatsApp access token"),
+            (r'"password"\s*:\s*"[^"]{8,}"',        "hardcoded password field"),
+          ]
+
+          found = []
+          for path in pathlib.Path("n8n/workflows").rglob("*.json"):
+            text = path.read_text(encoding="utf-8")
+            for pattern, label in PATTERNS:
+              if re.search(pattern, text):
+                found.append(f"{label} in {path}")
+
+          if found:
+            print("SECRETS DETECTED in workflow files — do NOT commit real credentials!")
+            for f in found:
+              print(f"  ✗ {f}")
+            sys.exit(1)
+          else:
+            print("No hardcoded secrets detected.")
+          EOF

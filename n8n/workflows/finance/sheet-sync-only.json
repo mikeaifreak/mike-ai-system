@@ -1,0 +1,98 @@
+{
+  "id": "fin-sheet-sync-001",
+  "name": "Finance — Hourly Sheet Sync (Silent)",
+  "active": true,
+  "tags": [
+    { "name": "finance" },
+    { "name": "production" }
+  ],
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "errorWorkflow": "shared-global-error-handler-001"
+  },
+  "nodes": [
+    {
+      "id": "c3333333-3333-3333-3333-333333333301",
+      "name": "Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "hours", "hoursInterval": 1 }
+          ]
+        }
+      }
+    },
+    {
+      "id": "c3333333-3333-3333-3333-333333333302",
+      "name": "Sync Sheet → DB",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [480, 300],
+      "parameters": {
+        "command": "cd /app && python scripts/python/main.py --mode sync_only 2>&1"
+      }
+    },
+    {
+      "id": "c3333333-3333-3333-3333-333333333303",
+      "name": "Sync OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "cond-sync",
+              "leftValue": "={{ $json.exitCode }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "c3333333-3333-3333-3333-333333333304",
+      "name": "Done",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [960, 200],
+      "parameters": {}
+    },
+    {
+      "id": "c3333333-3333-3333-3333-333333333305",
+      "name": "Alert — Sync Failed",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [960, 420],
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "channel": "={{ $env.SLACK_CHANNEL_ID }}",
+        "text": ":x: *Sheet Sync FAILED* — {{ $now.toISO() }}\n```{{ $json.stdout.slice(0, 600) }}```"
+      },
+      "credentials": {
+        "slackApi": { "id": "slack-cred-01", "name": "Slack Bot" }
+      }
+    }
+  ],
+  "connections": {
+    "Every Hour": {
+      "main": [[ { "node": "Sync Sheet → DB", "type": "main", "index": 0 } ]]
+    },
+    "Sync Sheet → DB": {
+      "main": [[ { "node": "Sync OK?", "type": "main", "index": 0 } ]]
+    },
+    "Sync OK?": {
+      "main": [
+        [ { "node": "Done",              "type": "main", "index": 0 } ],
+        [ { "node": "Alert — Sync Failed","type": "main", "index": 0 } ]
+      ]
+    }
+  }
+}

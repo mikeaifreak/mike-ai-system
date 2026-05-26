@@ -1,0 +1,97 @@
+{
+  "id": "shared-global-error-handler-001",
+  "name": "Shared — Global Error Handler",
+  "active": true,
+  "tags": [
+    { "name": "shared" },
+    { "name": "infrastructure" },
+    { "name": "production" }
+  ],
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "notes": "Set this workflow as the Error Workflow in every production workflow's Settings tab. It catches all unhandled failures and notifies via Slack + WhatsApp.",
+  "nodes": [
+    {
+      "id": "f6666666-6666-6666-6666-666666666601",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [240, 400],
+      "parameters": {}
+    },
+    {
+      "id": "f6666666-6666-6666-6666-666666666602",
+      "name": "Build Error Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 400],
+      "parameters": {
+        "jsCode": "const err     = $input.first().json;\nconst wfName  = err.workflow?.name || 'Unknown Workflow';\nconst errMsg  = err.execution?.error?.message || 'No error message';\nconst errNode = err.execution?.error?.node?.name || 'Unknown Node';\nconst execId  = err.execution?.id || 'N/A';\nconst execUrl = `${$env.N8N_BASE_URL}/workflow/${err.workflow?.id}/executions/${execId}`;\nconst ts      = new Date().toISOString();\n\nconst slackText = [\n  ':rotating_light: *n8n Workflow Error*',\n  '',\n  `*Workflow:*  ${wfName}`,\n  `*Node:*      ${errNode}`,\n  `*Error:*     ${errMsg}`,\n  `*Exec ID:*   ${execId}`,\n  `*Time:*      ${ts}`,\n  '',\n  `<${execUrl}|View Execution>`,\n].join('\\n');\n\nconst whatsappText = [\n  '🚨 n8n Error Alert',\n  `Workflow: ${wfName}`,\n  `Node: ${errNode}`,\n  `Error: ${errMsg.slice(0, 200)}`,\n  `Time: ${ts}`,\n].join('\\n');\n\nreturn [{ json: { wfName, errMsg, errNode, execId, execUrl, ts, slackText, whatsappText } }];"
+      }
+    },
+    {
+      "id": "f6666666-6666-6666-6666-666666666603",
+      "name": "Slack — Error Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [720, 300],
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "channel": "={{ $env.SLACK_CHANNEL_ID }}",
+        "text": "={{ $json.slackText }}"
+      },
+      "credentials": {
+        "slackApi": { "id": "slack-cred-01", "name": "Slack Bot" }
+      }
+    },
+    {
+      "id": "f6666666-6666-6666-6666-666666666604",
+      "name": "WhatsApp — Error Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 520],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{ $env.WHATSAPP_API_VERSION }}/{{ $env.WHATSAPP_PHONE_NUMBER_ID }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: $env.WHATSAPP_RECIPIENT_NUMBER, type: 'text', text: { preview_url: false, body: $json.whatsappText } }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "f6666666-6666-6666-6666-666666666605",
+      "name": "Log to DB",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [960, 400],
+      "parameters": {
+        "command": "=cd /app && python3 -c \"\nimport psycopg2, os, json\nconn = psycopg2.connect(os.environ['POSTGRES_URL'])\ncur  = conn.cursor()\ncur.execute(\\\"INSERT INTO agent_runs (agent_name, workflow_name, status, error_message, model) VALUES (%s, %s, 'error', %s, %s)\\\",\n  ('n8n_error_handler', '{{ $json.wfName }}', '{{ $json.errMsg.replace(\"'\", \"''\") }}', 'n8n'))\nconn.commit(); cur.close(); conn.close()\n\""
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [[ { "node": "Build Error Context", "type": "main", "index": 0 } ]]
+    },
+    "Build Error Context": {
+      "main": [
+        [ { "node": "Slack — Error Alert",    "type": "main", "index": 0 } ],
+        [ { "node": "WhatsApp — Error Alert", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Slack — Error Alert": {
+      "main": [[ { "node": "Log to DB", "type": "main", "index": 0 } ]]
+    }
+  }
+}

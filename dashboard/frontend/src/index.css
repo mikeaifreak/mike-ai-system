@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.pulse-dot { animation: pulse-dot 1.5s ease-in-out infinite; }
+
+@keyframes nova-glow {
+  0%, 100% { box-shadow: 0 0 8px #00FF88; }
+  50% { box-shadow: 0 0 20px #00FF88, 0 0 40px #00FF8844; }
+}
+.nova-glow { animation: nova-glow 2s ease-in-out infinite; }
+
+* { box-sizing: border-box; }
+body { margin: 0; background: #000000; color: #F1F5F9; font-family: 'Inter', sans-serif; }
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #0A0A0A; }
+::-webkit-scrollbar-thumb { background: #1F1F1F; border-radius: 2px; }

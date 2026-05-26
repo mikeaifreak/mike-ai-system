@@ -1,0 +1,103 @@
+{
+  "id": "fin-morning-report-001",
+  "name": "Finance — Daily P&L Morning Report",
+  "active": true,
+  "tags": [
+    { "name": "finance" },
+    { "name": "production" }
+  ],
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "shared-global-error-handler-001"
+  },
+  "nodes": [
+    {
+      "id": "a1111111-1111-1111-1111-111111111101",
+      "name": "Daily 06:30 Mon–Fri",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 6 * * 1-5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "a1111111-1111-1111-1111-111111111102",
+      "name": "Run Morning Pipeline",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [480, 300],
+      "parameters": {
+        "command": "cd /app && python scripts/python/main.py --mode morning_report 2>&1"
+      }
+    },
+    {
+      "id": "a1111111-1111-1111-1111-111111111103",
+      "name": "Pipeline Succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "cond-exit",
+              "leftValue": "={{ $json.exitCode }}",
+              "rightValue": 0,
+              "operator": { "type": "number", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "a1111111-1111-1111-1111-111111111104",
+      "name": "Log Success",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [960, 200],
+      "parameters": {}
+    },
+    {
+      "id": "a1111111-1111-1111-1111-111111111105",
+      "name": "Alert — Pipeline Failed",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [960, 420],
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "channel": "={{ $env.SLACK_CHANNEL_ID }}",
+        "text": ":rotating_light: *Morning Pipeline FAILED* — {{ $now.toISO() }}\n\nExit code: `{{ $json.exitCode }}`\n\nStdout:\n```{{ $json.stdout.slice(0, 1000) }}```"
+      },
+      "credentials": {
+        "slackApi": { "id": "slack-cred-01", "name": "Slack Bot" }
+      }
+    }
+  ],
+  "connections": {
+    "Daily 06:30 Mon–Fri": {
+      "main": [[ { "node": "Run Morning Pipeline", "type": "main", "index": 0 } ]]
+    },
+    "Run Morning Pipeline": {
+      "main": [[ { "node": "Pipeline Succeeded?", "type": "main", "index": 0 } ]]
+    },
+    "Pipeline Succeeded?": {
+      "main": [
+        [ { "node": "Log Success",            "type": "main", "index": 0 } ],
+        [ { "node": "Alert — Pipeline Failed", "type": "main", "index": 0 } ]
+      ]
+    }
+  }
+}

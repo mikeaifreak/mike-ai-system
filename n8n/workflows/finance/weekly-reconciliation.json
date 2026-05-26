@@ -1,0 +1,111 @@
+{
+  "id": "fin-reconcile-001",
+  "name": "Finance — Weekly Reconciliation Audit",
+  "active": true,
+  "tags": [
+    { "name": "finance" },
+    { "name": "production" }
+  ],
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "errorWorkflow": "shared-global-error-handler-001"
+  },
+  "nodes": [
+    {
+      "id": "d4444444-4444-4444-4444-444444444401",
+      "name": "Monday 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "cronExpression", "expression": "0 8 * * 1" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "d4444444-4444-4444-4444-444444444402",
+      "name": "Run Reconciliation",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [480, 300],
+      "parameters": {
+        "command": "cd /app && python scripts/python/main.py --mode reconcile 2>&1"
+      }
+    },
+    {
+      "id": "d4444444-4444-4444-4444-444444444403",
+      "name": "Parse Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "parameters": {
+        "jsCode": "const stdout = $input.first().json.stdout || '';\nconst exitCode = $input.first().json.exitCode;\n\nconst mismatchMatch = stdout.match(/mismatches=(\\d+)/);\nconst mismatches = mismatchMatch ? parseInt(mismatchMatch[1]) : -1;\n\nconst sheetMatch = stdout.match(/sheet=(\\d+)/);\nconst dbMatch    = stdout.match(/db=(\\d+)/);\n\nreturn [{\n  json: {\n    exitCode,\n    mismatches,\n    sheetRows: sheetMatch ? parseInt(sheetMatch[1]) : null,\n    dbRows:    dbMatch    ? parseInt(dbMatch[1])    : null,\n    stdout,\n    status: exitCode === 0 && mismatches === 0 ? 'ok' : 'warning'\n  }\n}];"
+      }
+    },
+    {
+      "id": "d4444444-4444-4444-4444-444444444404",
+      "name": "Has Mismatches?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [960, 300],
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "cond-recon",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "ok",
+              "operator": { "type": "string", "operation": "notEquals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "d4444444-4444-4444-4444-444444444405",
+      "name": "Alert — Reconciliation Warning",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1200, 200],
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "channel": "={{ $env.SLACK_CHANNEL_ID }}",
+        "text": ":warning: *Weekly Reconciliation — {{ $json.mismatches }} mismatch(es)* — {{ $now.toISO() }}\n\n• Sheet rows: {{ $json.sheetRows }}\n• DB rows: {{ $json.dbRows }}\n\nCheck `reconciliation_log` table for details."
+      },
+      "credentials": {
+        "slackApi": { "id": "slack-cred-01", "name": "Slack Bot" }
+      }
+    },
+    {
+      "id": "d4444444-4444-4444-4444-444444444406",
+      "name": "All Clear",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1200, 420],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Monday 08:00": {
+      "main": [[ { "node": "Run Reconciliation", "type": "main", "index": 0 } ]]
+    },
+    "Run Reconciliation": {
+      "main": [[ { "node": "Parse Output", "type": "main", "index": 0 } ]]
+    },
+    "Parse Output": {
+      "main": [[ { "node": "Has Mismatches?", "type": "main", "index": 0 } ]]
+    },
+    "Has Mismatches?": {
+      "main": [
+        [ { "node": "Alert — Reconciliation Warning", "type": "main", "index": 0 } ],
+        [ { "node": "All Clear",                      "type": "main", "index": 0 } ]
+      ]
+    }
+  }
+}
