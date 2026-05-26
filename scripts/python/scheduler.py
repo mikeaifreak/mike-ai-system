@@ -246,7 +246,8 @@ def main() -> None:
     logger.info("%-20s  %-45s  %s", "JOB ID", "NAME", "NEXT RUN")
     logger.info("-" * 90)
     for job in scheduler.get_jobs():
-        logger.info("%-20s  %-45s  %s", job.id, job.name, job.next_run_time)
+        next_run = getattr(job, "next_run_time", "pending")
+        logger.info("%-20s  %-45s  %s", job.id, job.name, next_run)
     logger.info("-" * 90)
 
     scheduler.start()
