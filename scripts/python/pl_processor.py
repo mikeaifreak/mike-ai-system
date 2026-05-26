@@ -22,16 +22,16 @@ REFUND_PCT_HIGH_THRESHOLD = config.THRESHOLD_REFUND_PCT_HIGH  # default 10.0
 
 UPSERT_SQL = """
 INSERT INTO daily_pl (
-    report_date, revenue, cog, adspend_google, mediabuying,
+    store_id, report_date, revenue, cog, adspend_google, mediabuying,
     employee_cost, transaction_fee, profit, roas, profit_pct,
     cog_pct, cvr_pct, cpc, refunds, refund_pct, source, synced_at
 ) VALUES (
-    %(report_date)s, %(revenue)s, %(cog)s, %(adspend_google)s, %(mediabuying)s,
+    %(store_id)s, %(report_date)s, %(revenue)s, %(cog)s, %(adspend_google)s, %(mediabuying)s,
     %(employee_cost)s, %(transaction_fee)s, %(profit)s, %(roas)s, %(profit_pct)s,
     %(cog_pct)s, %(cvr_pct)s, %(cpc)s, %(refunds)s, %(refund_pct)s,
     %(source)s, NOW()
 )
-ON CONFLICT (report_date) DO UPDATE SET
+ON CONFLICT (store_id, report_date) DO UPDATE SET
     revenue         = EXCLUDED.revenue,
     cog             = EXCLUDED.cog,
     adspend_google  = EXCLUDED.adspend_google,
@@ -199,13 +199,18 @@ def _log_agent_run(
     ))
 
 
-def process_and_store(rows: list[dict]) -> dict:
+def process_and_store(rows: list[dict], store_id: str = "default") -> dict:
     """
     Upsert P&L rows into PostgreSQL.
 
-    Enforces the 7-day reprocessing window: rows within the last
-    REPROCESS_WINDOW_DAYS are always processed regardless of prior runs,
-    ensuring late supplier invoices are captured.
+    Args:
+        rows:     List of row dicts from sheets_parser.fetch_pl_data().
+                  Each dict may already contain a 'store_id' key (set by the
+                  parser). The store_id parameter here takes precedence,
+                  ensuring all rows in one batch share the same store identity.
+        store_id: Shopify store identifier. Defaults to 'default' (single-store
+                  mode). Multi-store callers pass the per-store ID so the
+                  ON CONFLICT (store_id, report_date) key resolves correctly.
 
     Returns:
         {
@@ -235,6 +240,7 @@ def process_and_store(rows: list[dict]) -> dict:
                     # Only process rows within the reprocessing window or newer
                     # (older historical rows are still inserted on first sync)
                     params = {
+                        "store_id":       store_id,
                         "report_date":    rdate,
                         "revenue":        row.get("revenue"),
                         "cog":            row.get("cog"),

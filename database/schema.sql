@@ -6,11 +6,22 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ---------------------------------------------------------------------------
--- Core P&L table — one row per calendar day
+-- Core P&L table — one row per store per calendar day
+--
+-- Multi-store architecture:
+--   store_id = 'default' for the current single store.
+--   When additional Shopify stores are added, each gets its own store_id
+--   (e.g. 'store_nl', 'store_de'). The unique key is (store_id, report_date)
+--   so the same date can exist once per store.
+--
+--   weekly_summary and monthly_summary do NOT have store_id yet — they
+--   aggregate across all stores. Add store_id to those tables when
+--   per-store reporting is required.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS daily_pl (
-    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    report_date     DATE        NOT NULL UNIQUE,
+    id              UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    store_id        VARCHAR(100) NOT NULL DEFAULT 'default',
+    report_date     DATE         NOT NULL,
     revenue         NUMERIC(14,2),
     cog             NUMERIC(14,2),
     adspend_google  NUMERIC(14,2),
@@ -28,10 +39,48 @@ CREATE TABLE IF NOT EXISTS daily_pl (
     source          VARCHAR(100) DEFAULT 'google_sheets',
     synced_at       TIMESTAMPTZ  DEFAULT NOW(),
     created_at      TIMESTAMPTZ  DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ  DEFAULT NOW()
+    updated_at      TIMESTAMPTZ  DEFAULT NOW(),
+    CONSTRAINT uq_daily_pl_store_date UNIQUE (store_id, report_date)
 );
 
 CREATE INDEX IF NOT EXISTS idx_daily_pl_report_date ON daily_pl (report_date DESC);
+CREATE INDEX IF NOT EXISTS idx_daily_pl_store_id    ON daily_pl (store_id);
+
+-- ---------------------------------------------------------------------------
+-- Migration block — idempotent, safe to run on existing installations.
+-- Fresh installs: the ADD COLUMN and DROP CONSTRAINT are no-ops because
+-- the CREATE TABLE above already has the correct shape.
+-- Existing installs (created before store_id was added): this block adds
+-- the column and replaces the single-column unique key with the composite one.
+-- ---------------------------------------------------------------------------
+DO $$
+BEGIN
+    -- Add store_id if the table was created without it
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'daily_pl' AND column_name = 'store_id'
+    ) THEN
+        ALTER TABLE daily_pl
+            ADD COLUMN store_id VARCHAR(100) NOT NULL DEFAULT 'default';
+    END IF;
+
+    -- Drop the old single-column unique constraint if it still exists
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'daily_pl_report_date_key' AND conrelid = 'daily_pl'::regclass
+    ) THEN
+        ALTER TABLE daily_pl DROP CONSTRAINT daily_pl_report_date_key;
+    END IF;
+
+    -- Add the composite unique constraint if it does not exist yet
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'uq_daily_pl_store_date' AND conrelid = 'daily_pl'::regclass
+    ) THEN
+        ALTER TABLE daily_pl
+            ADD CONSTRAINT uq_daily_pl_store_date UNIQUE (store_id, report_date);
+    END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- Trigger: auto-update updated_at on daily_pl

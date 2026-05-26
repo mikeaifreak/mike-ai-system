@@ -3,6 +3,7 @@ config.py — Centralised credential + settings loader.
 All values come from environment variables (loaded from .env by python-dotenv).
 """
 
+import json
 import os
 from dotenv import load_dotenv
 
@@ -18,8 +19,42 @@ def _require(key: str) -> str:
 
 # ---------------------------------------------------------------------------
 # Google Sheets (via Apps Script web app)
+#
+# GOOGLE_SCRIPT_URL supports two formats:
+#
+#   Single store (current):
+#     GOOGLE_SCRIPT_URL=https://script.google.com/macros/s/.../exec
+#     → parsed as {"default": "<url>"}
+#
+#   Multi-store (future — when Mike has multiple Shopify stores):
+#     GOOGLE_SCRIPT_URL={"store_nl":"https://...","store_de":"https://..."}
+#     → each store_id maps to its own Apps Script URL
+#
+# To activate multi-store: iterate config.GOOGLE_STORE_URLS.items() in main.py
+# and call _sync_sheets_to_db(store_id=sid, url=url) for each.
 # ---------------------------------------------------------------------------
-GOOGLE_SCRIPT_URL: str = _require("GOOGLE_SCRIPT_URL")
+def _parse_store_urls(raw: str) -> dict:
+    stripped = raw.strip()
+    if stripped.startswith("{"):
+        try:
+            mapping = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise EnvironmentError(
+                f"GOOGLE_SCRIPT_URL looks like JSON but failed to parse: {exc}"
+            ) from exc
+        if not mapping:
+            raise EnvironmentError("GOOGLE_SCRIPT_URL JSON map is empty.")
+        return {str(k): str(v) for k, v in mapping.items()}
+    return {"default": stripped}
+
+
+_raw_script_url: str = _require("GOOGLE_SCRIPT_URL")
+
+# dict[store_id → url] — single entry now, multi-store ready
+GOOGLE_STORE_URLS: dict = _parse_store_urls(_raw_script_url)
+
+# Convenience: URL for the first (currently only) store
+GOOGLE_SCRIPT_URL: str = next(iter(GOOGLE_STORE_URLS.values()))
 
 # ---------------------------------------------------------------------------
 # PostgreSQL

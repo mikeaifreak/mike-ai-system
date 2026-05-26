@@ -43,14 +43,21 @@ logger = logging.getLogger("finance_ai.main")
 # Pipeline modes
 # ---------------------------------------------------------------------------
 
-def _sync_sheets_to_db() -> dict:
-    """Fetch from Google Sheets and upsert into PostgreSQL."""
-    logger.info("=== SYNC: Fetching P&L data from Google Sheets ===")
-    rows = fetch_pl_data()
+def _sync_sheets_to_db(store_id: str = "default", url: str | None = None) -> dict:
+    """Fetch from Google Sheets and upsert into PostgreSQL.
+
+    Args:
+        store_id: Shopify store identifier passed through to the DB upsert.
+                  Multi-store: iterate config.GOOGLE_STORE_URLS.items() and
+                  call this once per store with the matching (store_id, url).
+        url:      Apps Script URL override. Defaults to config.GOOGLE_SCRIPT_URL.
+    """
+    logger.info("=== SYNC: Fetching P&L data | store_id=%s ===", store_id)
+    rows = fetch_pl_data(store_id=store_id, url=url)
     logger.info("Fetched %d rows from sheet.", len(rows))
 
     logger.info("=== SYNC: Processing and storing rows ===")
-    result = process_and_store(rows)
+    result = process_and_store(rows, store_id=store_id)
     logger.info(
         "Stored: %d inserted, %d updated, %d anomalies.",
         result["rows_inserted"],

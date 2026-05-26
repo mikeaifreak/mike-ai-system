@@ -205,13 +205,20 @@ def _parse_array_of_objects(rows: list) -> list[dict]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def fetch_pl_data() -> list[dict]:
+def fetch_pl_data(store_id: str = "default", url: str | None = None) -> list[dict]:
     """
     Call the Google Apps Script web app and return a list of dicts —
     one per data row — with column names matching the daily_pl schema.
+
+    Args:
+        store_id: Identifier for the Shopify store this sheet belongs to.
+                  Defaults to 'default' (single-store mode). When multi-store
+                  is activated, pass each store's ID so rows are tagged correctly.
+        url:      Override the Apps Script URL. Defaults to config.GOOGLE_SCRIPT_URL.
+                  Multi-store callers pass the per-store URL from config.GOOGLE_STORE_URLS.
     """
-    url = config.GOOGLE_SCRIPT_URL
-    logger.info("Fetching P&L data from Apps Script: %s", url)
+    url = url or config.GOOGLE_SCRIPT_URL
+    logger.info("Fetching P&L data | store_id=%s | url=%s", store_id, url)
 
     try:
         response = requests.get(url, timeout=REQUEST_TIMEOUT)
@@ -243,12 +250,19 @@ def fetch_pl_data() -> list[dict]:
     first = rows[0]
     if isinstance(first, list):
         logger.debug("Detected array-of-arrays format.")
-        return _parse_array_of_arrays(rows)
+        parsed = _parse_array_of_arrays(rows)
     elif isinstance(first, dict):
         logger.debug("Detected array-of-objects format.")
-        return _parse_array_of_objects(rows)
+        parsed = _parse_array_of_objects(rows)
     else:
         raise ValueError(
             f"Unexpected row type in Apps Script response: {type(first).__name__}. "
             "Expected list or dict."
         )
+
+    # Tag every row with store_id so pl_processor can upsert against
+    # the correct (store_id, report_date) unique key.
+    for row in parsed:
+        row["store_id"] = store_id
+
+    return parsed
