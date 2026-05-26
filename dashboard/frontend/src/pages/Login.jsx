@@ -15,7 +15,7 @@ export default function Login() {
     setLoading(true)
     try {
       const data = await login(username, password)
-      setToken(data.access_token || data.token)
+      setToken(data?.data?.token || data.access_token || data.token)
       navigate('/dashboard')
     } catch (err) {
       setError(err.message || 'Authentication failed')
