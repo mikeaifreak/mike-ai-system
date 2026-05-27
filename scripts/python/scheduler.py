@@ -2,14 +2,16 @@
 scheduler.py — APScheduler job runner (replaces n8n).
 
 Jobs (all times Europe/Amsterdam):
-  00:00  reconcile          nightly sheet vs DB check
-  06:40  pull_shopify        write revenue(B) + refunds(O) to P&L sheet
-  06:45  pull_google_ads     write adspend_google(D) to P&L sheet
-  06:46  pull_pinterest_ads  write adspend_pinterest(E) to P&L sheet
-  06:50  sync_only           read full P&L row (incl. formulas), store in PostgreSQL
-  07:00  morning_report      Slack P&L report (complete data)
-  */30   read_invoices       Slack invoice scan
-  21:00  eod_report          WhatsApp EOD summary
+  00:00        reconcile           nightly sheet vs DB check
+  06:40        pull_shopify        write revenue(B) + refunds(O) to P&L sheet
+  06:45        pull_google_ads     write adspend_google(D) to P&L sheet
+  06:46        pull_pinterest_ads  write adspend_pinterest(E) to P&L sheet
+  06:50        sync_only           read full P&L row (incl. formulas), store in PostgreSQL
+  07:00        morning_report      Slack daily P&L report (complete data)
+  07:05        all_brands_summary  Slack all-store summary table
+  08:00 Mon    weekly_report       Slack weekly P&L recap (Mondays only)
+  */30         read_invoices       Poll #supplier-invoices, GPT-4o extraction
+  21:00        eod_report          WhatsApp EOD summary
 
 Every job is logged to agent_runs. Failures send a Slack alert to
 SLACK_ALERTS_CHANNEL (falls back to SLACK_CHANNEL_ID).
@@ -219,10 +221,26 @@ def main() -> None:
 
     scheduler.add_job(
         _execute,
+        CronTrigger(hour=7, minute=5, timezone=TIMEZONE),
+        args=["all_brands_summary"],
+        id="all_brands_summary",
+        name="All-brands Slack summary (07:05)",
+    )
+
+    scheduler.add_job(
+        _execute,
+        CronTrigger(day_of_week="mon", hour=8, minute=0, timezone=TIMEZONE),
+        args=["weekly_report"],
+        id="weekly_report",
+        name="Weekly Slack P&L recap — Mon 08:00",
+    )
+
+    scheduler.add_job(
+        _execute,
         CronTrigger(minute="*/30", timezone=TIMEZONE),
         args=["read_invoices"],
         id="read_invoices",
-        name="Slack invoice scan (every 30 min)",
+        name="Slack invoice scan via GPT-4o (every 30 min)",
     )
 
     scheduler.add_job(

@@ -310,3 +310,14 @@ SELECT
 FROM daily_pl
 WHERE report_date >= DATE_TRUNC('month', CURRENT_DATE)
   AND report_date <= CURRENT_DATE;
+
+-- ---------------------------------------------------------------------------
+-- Slack sync state — tracks last processed message timestamp per channel
+-- (used by slack_invoice_reader.py to avoid re-processing messages)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS slack_sync_state (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    channel_id  VARCHAR(100) UNIQUE NOT NULL,
+    last_ts     VARCHAR(50),   -- Slack message timestamp string e.g. "1716800000.123456"
+    updated_at  TIMESTAMPTZ  DEFAULT NOW()
+);

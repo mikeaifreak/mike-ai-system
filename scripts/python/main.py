@@ -2,21 +2,27 @@
 main.py — Finance Controller AI System orchestrator.
 
 Usage:
-    python main.py --mode pull_shopify       # pull revenue + refunds → write to P&L sheet
-    python main.py --mode pull_google_ads    # pull ad spend → write adspend_google(D) to sheet
-    python main.py --mode pull_pinterest_ads # pull Pinterest spend → write adspend_pinterest(E)
-    python main.py --mode sync_only          # read full P&L sheet → store in PostgreSQL
-    python main.py --mode morning_report     # sync + Slack daily report
-    python main.py --mode read_invoices      # lightweight sheet sync, no notifications
-    python main.py --mode eod_report         # WhatsApp EOD summary
-    python main.py --mode reconcile          # sheet vs DB row-count check
+    python main.py --mode pull_shopify          # pull revenue + refunds → write to P&L sheet
+    python main.py --mode pull_google_ads       # pull ad spend → write adspend_google(D) to sheet
+    python main.py --mode pull_pinterest_ads    # pull Pinterest spend → write adspend_pinterest(E)
+    python main.py --mode sync_only             # read full P&L sheet → store in PostgreSQL
+    python main.py --mode morning_report        # sync + Slack daily report
+    python main.py --mode all_brands_summary    # all-store Slack summary (post-morning-report)
+    python main.py --mode weekly_report         # Slack weekly P&L recap (Mondays)
+    python main.py --mode read_invoices         # poll Slack #supplier-invoices via GPT-4o
+    python main.py --mode eod_report            # WhatsApp EOD summary
+    python main.py --mode reconcile             # sheet vs DB row-count check
 
 Daily pipeline (automated by scheduler.py, all times Europe/Amsterdam):
-    06:40  pull_shopify       → writes revenue(B) + refunds(O) to P&L sheet
-    06:45  pull_google_ads    → writes adspend_google(D) to P&L sheet
-    06:46  pull_pinterest_ads → writes adspend_pinterest(E) to P&L sheet
-    06:50  sync_only          → reads full P&L row (incl. calculated cols), stores in PostgreSQL
-    07:00  morning_report     → Slack report from PostgreSQL
+    06:40  pull_shopify         → writes revenue(B) + refunds(O) to P&L sheet
+    06:45  pull_google_ads      → writes adspend_google(D) to P&L sheet
+    06:46  pull_pinterest_ads   → writes adspend_pinterest(E) to P&L sheet
+    06:50  sync_only            → reads full P&L row (incl. calculated cols), stores in PostgreSQL
+    07:00  morning_report       → Slack daily P&L report from PostgreSQL
+    07:05  all_brands_summary   → Slack all-store summary table
+    08:00  weekly_report        → Slack weekly recap (Mondays only)
+    */30   read_invoices        → poll #supplier-invoices, GPT-4o extraction
+    21:00  eod_report           → WhatsApp EOD summary
 
 MODE can also be set via the MODE environment variable.
 """
@@ -33,7 +39,13 @@ import psycopg2
 import config
 from sheets_parser import fetch_pl_data
 from pl_processor import process_and_store
-from slack_reporter import send_daily_report, send_anomaly_alert
+from slack_reporter import (
+    send_daily_report,
+    send_anomaly_alert,
+    send_weekly_report,
+    send_all_brands_summary,
+)
+import slack_invoice_reader
 from whatsapp_alerts import send_eod_summary
 from google_ads_puller import pull_all_stores as _pull_google_ads_stores
 from pinterest_ads_puller import pull_all_stores as _pull_pinterest_ads_stores
@@ -132,10 +144,24 @@ def run_sync_only() -> None:
     _sync_sheets_to_db()
 
 
+def run_all_brands_summary() -> None:
+    """Send all-brands/stores P&L summary table to Slack (#finance channel)."""
+    logger.info(">>> MODE: all_brands_summary")
+    delivered = send_all_brands_summary()
+    logger.info("All-brands summary delivered: %s", delivered)
+
+
+def run_weekly_report() -> None:
+    """Send weekly P&L recap to Slack (runs on Mondays at 08:00)."""
+    logger.info(">>> MODE: weekly_report")
+    delivered = send_weekly_report()
+    logger.info("Weekly Slack report delivered: %s", delivered)
+
+
 def run_read_invoices() -> None:
-    """Lightweight invoice/sheet sync every 30 min — no notifications."""
+    """Poll #supplier-invoices Slack channel, extract invoices via GPT-4o."""
     logger.info(">>> MODE: read_invoices")
-    _sync_sheets_to_db()
+    slack_invoice_reader.run()
 
 
 def run_eod_report() -> None:
@@ -207,14 +233,16 @@ def run_reconcile() -> None:
 # ---------------------------------------------------------------------------
 
 MODES = {
-    "pull_shopify":       run_pull_shopify,
-    "pull_google_ads":    run_pull_google_ads,
-    "pull_pinterest_ads": run_pull_pinterest_ads,
-    "morning_report":     run_morning_report,
-    "sync_only":          run_sync_only,
-    "read_invoices":      run_read_invoices,
-    "eod_report":         run_eod_report,
-    "reconcile":          run_reconcile,
+    "pull_shopify":         run_pull_shopify,
+    "pull_google_ads":      run_pull_google_ads,
+    "pull_pinterest_ads":   run_pull_pinterest_ads,
+    "morning_report":       run_morning_report,
+    "all_brands_summary":   run_all_brands_summary,
+    "weekly_report":        run_weekly_report,
+    "sync_only":            run_sync_only,
+    "read_invoices":        run_read_invoices,
+    "eod_report":           run_eod_report,
+    "reconcile":            run_reconcile,
 }
 
 

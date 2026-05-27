@@ -64,8 +64,13 @@ POSTGRES_URL: str = _require("POSTGRES_URL")
 # ---------------------------------------------------------------------------
 # Slack
 # ---------------------------------------------------------------------------
-SLACK_BOT_TOKEN: str = _require("SLACK_BOT_TOKEN")
+SLACK_BOT_TOKEN: str  = _require("SLACK_BOT_TOKEN")
 SLACK_CHANNEL_ID: str = _require("SLACK_CHANNEL_ID")
+
+# Channel-specific overrides — fall back to SLACK_CHANNEL_ID if not set
+SLACK_REPORTS_CHANNEL:  str = os.getenv("SLACK_REPORTS_CHANNEL")  or SLACK_CHANNEL_ID
+SLACK_ALERTS_CHANNEL:   str = os.getenv("SLACK_ALERTS_CHANNEL")   or SLACK_CHANNEL_ID
+SLACK_INVOICES_CHANNEL: str = os.getenv("SLACK_INVOICES_CHANNEL") or SLACK_CHANNEL_ID
 
 # ---------------------------------------------------------------------------
 # AI models
