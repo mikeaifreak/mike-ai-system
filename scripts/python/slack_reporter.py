@@ -1,5 +1,7 @@
 """
 slack_reporter.py — Slack Block Kit messaging for the Finance Controller AI.
+Currency-aware: per-store reports use the store's native currency symbol.
+All-brands summary converts everything to EUR for cross-store comparison.
 
 Public functions:
   send_daily_report(date)          → SLACK_REPORTS_CHANNEL, one per store
@@ -25,6 +27,7 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
 import config
+from currency_converter import get_daily_rate
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,20 @@ _AMS_OFFSET = timedelta(hours=2)  # CEST (Apr–Oct); CET (+1) is close enough f
 
 STORE_DISPLAY_NAMES = {
     "default": "FRUGAZE",
+}
+
+# ISO 4217 → symbol map (extend as Mike adds new stores)
+_CURRENCY_SYMBOLS: dict[str, str] = {
+    "USD": "$",
+    "EUR": "€",
+    "GBP": "£",
+    "CAD": "CA$",
+    "AUD": "A$",
+    "CHF": "Fr",
+    "JPY": "¥",
+    "SEK": "kr",
+    "NOK": "kr",
+    "DKK": "kr",
 }
 
 
@@ -53,17 +70,25 @@ def _store_name(store_id: str) -> str:
     return STORE_DISPLAY_NAMES.get(store_id, store_id.upper())
 
 
-def _fmt_currency(val) -> str:
-    if val is None:
-        return "N/A"
-    return f"${float(val):,.2f}"
+def _currency_symbol(currency: str) -> str:
+    """Return the display symbol for an ISO 4217 currency code."""
+    return _CURRENCY_SYMBOLS.get(str(currency).upper(), str(currency).upper() + " ")
 
 
-def _fmt_compact(val) -> str:
-    """Short currency — no decimals, for table columns."""
+def _fmt_currency(val, currency: str = "USD") -> str:
+    """Full currency format with symbol, e.g. '$1,234.56' or '€1,234.56'."""
     if val is None:
         return "N/A"
-    return f"${float(val):,.0f}"
+    sym = _currency_symbol(currency)
+    return f"{sym}{float(val):,.2f}"
+
+
+def _fmt_compact(val, currency: str = "USD") -> str:
+    """Short currency — no decimals, for fixed-width table columns."""
+    if val is None:
+        return "N/A"
+    sym = _currency_symbol(currency)
+    return f"{sym}{float(val):,.0f}"
 
 
 def _fmt_pct(val) -> str:
@@ -144,6 +169,9 @@ def _build_daily_blocks(
 ) -> list[dict]:
     name = _store_name(store_id)
 
+    # Use the store's native currency (read from the row; default USD)
+    currency = str(day.get("currency") or "USD").upper()
+
     ad_google    = day.get("adspend_google") or 0
     ad_pinterest = day.get("adspend_pinterest") or 0
     ad_total     = ad_google + ad_pinterest
@@ -152,21 +180,21 @@ def _build_daily_blocks(
     profit_pct = day.get("profit_pct") or 0
 
     metrics_lines = (
-        f"💰 *Revenue:*      {_fmt_currency(day.get('revenue'))}\n"
-        f"📦 *COG:*          {_fmt_currency(day.get('cog'))}\n"
-        f"📣 *Ad Spend:*     {_fmt_currency(ad_total)}\n"
-        f"   ↳ Google:     {_fmt_currency(ad_google)}\n"
-        f"   ↳ Pinterest:  {_fmt_currency(ad_pinterest)}\n"
-        f"💸 *Refunds:*      {_fmt_currency(day.get('refunds'))} ({_fmt_pct(refund_pct)})\n"
-        f"✅ *Profit:*       {_fmt_currency(day.get('profit'))} ({_fmt_pct(profit_pct)})\n"
+        f"💰 *Revenue:*      {_fmt_currency(day.get('revenue'), currency)}\n"
+        f"📦 *COG:*          {_fmt_currency(day.get('cog'), currency)}\n"
+        f"📣 *Ad Spend:*     {_fmt_currency(ad_total, currency)}\n"
+        f"   ↳ Google:     {_fmt_currency(ad_google, currency)}\n"
+        f"   ↳ Pinterest:  {_fmt_currency(ad_pinterest, currency)}\n"
+        f"💸 *Refunds:*      {_fmt_currency(day.get('refunds'), currency)} ({_fmt_pct(refund_pct)})\n"
+        f"✅ *Profit:*       {_fmt_currency(day.get('profit'), currency)} ({_fmt_pct(profit_pct)})\n"
         f"📈 *ROAS:*         {_fmt_roas(day.get('roas'))}"
     )
 
     if mtd:
         mtd_lines = (
             f"📅 *Month to Date*\n"
-            f"   Revenue:  {_fmt_currency(mtd.get('total_revenue'))}\n"
-            f"   Profit:   {_fmt_currency(mtd.get('total_profit'))}\n"
+            f"   Revenue:  {_fmt_currency(mtd.get('total_revenue'), currency)}\n"
+            f"   Profit:   {_fmt_currency(mtd.get('total_profit'), currency)}\n"
             f"   Avg ROAS: {_fmt_roas(mtd.get('avg_roas'))}"
         )
     else:
@@ -265,38 +293,58 @@ def _build_weekly_blocks(
     ]
 
 
-def _build_all_brands_blocks(report_date: date, store_rows: list[dict]) -> list[dict]:
-    header = f"{'Store':<12} {'Revenue':>10}  {'Profit':>9}  {'ROAS':>6}"
-    sep    = "─" * 44
+def _build_all_brands_blocks(
+    report_date: date,
+    store_rows: list[dict],
+    usd_eur_rate: Optional[float] = None,
+) -> list[dict]:
+    """
+    Build Block Kit blocks for the all-brands summary.
+
+    All monetary values are shown in EUR so stores with different native
+    currencies can be compared on equal footing.
+    Uses revenue_eur / profit_eur columns from daily_pl (computed by
+    pl_processor.py from the exchange rate at pull time).
+    """
+    header = f"{'Store':<12} {'Revenue (€)':>12}  {'Profit (€)':>11}  {'ROAS':>6}"
+    sep    = "─" * 48
     lines  = [header, sep]
 
-    total_rev    = 0.0
-    total_profit = 0.0
+    total_rev_eur    = 0.0
+    total_profit_eur = 0.0
+    roas_values      = []
 
     for r in store_rows:
-        sid     = r.get("store_id", "default")
-        rev     = float(r.get("revenue") or 0)
-        profit  = float(r.get("profit")  or 0)
-        roas    = r.get("roas")
-        total_rev    += rev
-        total_profit += profit
+        sid        = r.get("store_id", "default")
+        rev_eur    = float(r.get("revenue_eur") or r.get("revenue") or 0)
+        profit_eur = float(r.get("profit_eur")  or r.get("profit")  or 0)
+        roas       = r.get("roas")
+
+        total_rev_eur    += rev_eur
+        total_profit_eur += profit_eur
+        if roas:
+            roas_values.append(float(roas))
+
+        roas_str = f"{float(roas):.2f}x" if roas else "—"
         lines.append(
-            f"{_store_name(sid):<12} {_fmt_compact(rev):>10}  "
-            f"{_fmt_compact(profit):>9}  "
-            f"{float(roas):.2f}x" if roas else f"{_store_name(sid):<12} {_fmt_compact(rev):>10}  {_fmt_compact(profit):>9}  —"
+            f"{_store_name(sid):<12} {_fmt_compact(rev_eur, 'EUR'):>12}  "
+            f"{_fmt_compact(profit_eur, 'EUR'):>11}  {roas_str}"
         )
 
     lines.append(sep)
-    avg_roas_total = (
-        sum(float(r.get("roas") or 0) for r in store_rows if r.get("roas"))
-        / len([r for r in store_rows if r.get("roas")])
-        if any(r.get("roas") for r in store_rows) else 0
-    )
+    avg_roas = sum(roas_values) / len(roas_values) if roas_values else 0
     lines.append(
-        f"{'TOTAL':<12} {_fmt_compact(total_rev):>10}  "
-        f"{_fmt_compact(total_profit):>9}  "
-        f"{avg_roas_total:.2f}x"
+        f"{'TOTAL':<12} {_fmt_compact(total_rev_eur, 'EUR'):>12}  "
+        f"{_fmt_compact(total_profit_eur, 'EUR'):>11}  {avg_roas:.2f}x"
     )
+
+    # Build footnote with exchange rate if any store is non-EUR
+    has_usd_store = any(
+        str(r.get("currency") or "USD").upper() != "EUR" for r in store_rows
+    )
+    rate_note = ""
+    if has_usd_store and usd_eur_rate is not None:
+        rate_note = f"  ·  1 USD = {usd_eur_rate:.4f} EUR ({report_date})"
 
     return [
         {
@@ -310,18 +358,21 @@ def _build_all_brands_blocks(report_date: date, store_rows: list[dict]) -> list[
         {"type": "divider"},
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": "🏪 *Store Performance*"},
+            "text": {"type": "mrkdwn", "text": "🏪 *Store Performance — All figures in EUR*"},
         },
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"```\n" + "\n".join(lines) + "\n```"},
+            "text": {"type": "mrkdwn", "text": "```\n" + "\n".join(lines) + "\n```"},
         },
         {
             "type": "context",
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": f"_Finance Controller AI — {report_date.strftime('%d %b %Y')}_",
+                    "text": (
+                        f"_Finance Controller AI — {report_date.strftime('%d %b %Y')}"
+                        f"{rate_note}_"
+                    ),
                 }
             ],
         },
@@ -566,7 +617,12 @@ def send_all_brands_summary(report_date: Optional[date] = None) -> bool:
                     conn.commit()
                     return False
 
-                blocks = _build_all_brands_blocks(report_date, rows)
+                # Fetch USD→EUR rate for the footnote (None if all stores are EUR)
+                usd_eur_rate = None
+                if any(str(r.get("currency") or "USD").upper() != "EUR" for r in rows):
+                    usd_eur_rate = get_daily_rate("USD", "EUR", report_date)
+
+                blocks = _build_all_brands_blocks(report_date, rows, usd_eur_rate)
 
                 try:
                     resp = _get_client().chat_postMessage(

@@ -191,18 +191,47 @@ def _is_header_row(row: list) -> bool:
     return _parse_date(row[0]) is None
 
 
-def _extract_rows(payload) -> list:
-    """Unwrap whatever envelope the Apps Script returns into a flat list."""
+_VALID_CURRENCIES = frozenset({
+    "USD", "EUR", "GBP", "CAD", "AUD", "CHF", "JPY", "SEK", "NOK", "DKK",
+    "NZD", "SGD", "HKD", "CNY", "BRL", "MXN", "PLN", "CZK", "HUF", "RON",
+})
+
+
+def _extract_rows(payload) -> tuple[list, str]:
+    """
+    Unwrap whatever envelope the Apps Script returns.
+
+    Returns:
+        (rows_list, currency_code)
+
+    The Apps Script (updated version) returns:
+        {"success": true, "currency": "USD", "rows": [...]}
+
+    Older scripts or raw array responses:
+        [...]  → currency defaults to "USD"
+    """
     if isinstance(payload, list):
-        return payload
+        return payload, "USD"
+
     if isinstance(payload, dict):
-        for key in ("data", "rows", "values", "result"):
+        # Extract currency from envelope (new format)
+        raw_currency = str(payload.get("currency", "USD")).upper().strip()
+        currency = raw_currency if raw_currency in _VALID_CURRENCIES else "USD"
+        if raw_currency and raw_currency not in _VALID_CURRENCIES:
+            logger.warning(
+                "Unrecognised currency %r in Apps Script response — defaulting to USD",
+                raw_currency,
+            )
+
+        # Find the data array
+        for key in ("rows", "data", "values", "result"):
             if key in payload and isinstance(payload[key], list):
-                return payload[key]
+                return payload[key], currency
+
     raise ValueError(
         f"Unexpected Apps Script response shape. "
         f"Type: {type(payload).__name__}. "
-        "Expected a list or a dict with a 'data'/'rows' key."
+        "Expected a list or a dict with a 'rows'/'data' key."
     )
 
 
@@ -290,30 +319,37 @@ def _parse_object_rows(rows: list, store_id: str) -> list[dict]:
     return out
 
 
-def _parse_data_rows(raw_rows: list, store_id: str) -> list[dict]:
-    """Dispatch to the correct parser based on row type."""
+def _parse_data_rows(raw_rows: list, store_id: str, currency: str = "USD") -> list[dict]:
+    """
+    Dispatch to the correct parser based on row type.
+    Attaches currency to every parsed row dict.
+    """
     if not raw_rows:
         return []
 
     first = raw_rows[0]
 
     if isinstance(first, dict):
-        return _parse_object_rows(raw_rows, store_id)
-
-    if isinstance(first, list):
-        rows = raw_rows
-        if _is_header_row(rows[0]):
-            col_count = len(rows[0])
-            rows = rows[1:]
+        rows = _parse_object_rows(raw_rows, store_id)
+    elif isinstance(first, list):
+        row_data = raw_rows
+        if _is_header_row(row_data[0]):
+            col_count = len(row_data[0])
+            row_data = row_data[1:]
         else:
-            # Infer column count from first few data rows
-            col_count = max((len(r) for r in rows[:5] if r), default=15)
+            col_count = max((len(r) for r in row_data[:5] if r), default=15)
         layout = _detect_layout(col_count)
-        return _parse_array_rows(rows, layout, store_id)
+        rows = _parse_array_rows(row_data, layout, store_id)
+    else:
+        raise ValueError(
+            f"Unexpected row type: {type(first).__name__}. Expected list or dict."
+        )
 
-    raise ValueError(
-        f"Unexpected row type: {type(first).__name__}. Expected list or dict."
-    )
+    # Stamp every row with the currency detected from the sheet envelope
+    for row in rows:
+        row.setdefault("currency", currency)
+
+    return rows
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
@@ -349,7 +385,7 @@ def fetch_pl_data(store_id: str = "default", url: str | None = None) -> list[dic
             f"First 200 chars: {response.text[:200]!r}"
         ) from exc
 
-    raw_rows = _extract_rows(payload)
-    logger.info("Received %d raw rows.", len(raw_rows))
+    raw_rows, currency = _extract_rows(payload)
+    logger.info("Received %d raw rows | currency=%s.", len(raw_rows), currency)
 
-    return _parse_data_rows(raw_rows, store_id)
+    return _parse_data_rows(raw_rows, store_id, currency)

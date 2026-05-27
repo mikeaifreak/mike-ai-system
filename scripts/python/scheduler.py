@@ -2,16 +2,17 @@
 scheduler.py — APScheduler job runner (replaces n8n).
 
 Jobs (all times Europe/Amsterdam):
-  00:00        reconcile           nightly sheet vs DB check
-  06:40        pull_shopify        write revenue(B) + refunds(O) to P&L sheet
-  06:45        pull_google_ads     write adspend_google(D) to P&L sheet
-  06:46        pull_pinterest_ads  write adspend_pinterest(E) to P&L sheet
-  06:50        sync_only           read full P&L row (incl. formulas), store in PostgreSQL
-  07:00        morning_report      Slack daily P&L report (complete data)
-  07:05        all_brands_summary  Slack all-store summary table
-  08:00 Mon    weekly_report       Slack weekly P&L recap (Mondays only)
-  */30         read_invoices       Poll #supplier-invoices, GPT-4o extraction
-  21:00        eod_report          WhatsApp EOD summary
+  00:00        reconcile             nightly sheet vs DB check
+  06:35        fetch_exchange_rates  fetch USD/EUR daily FX rates (before all pulls)
+  06:40        pull_shopify          write revenue(B) + refunds(O) to P&L sheet
+  06:45        pull_google_ads       write adspend_google(D) to P&L sheet
+  06:46        pull_pinterest_ads    write adspend_pinterest(E) to P&L sheet
+  06:50        sync_only             read full P&L row (incl. formulas), store in PostgreSQL
+  07:00        morning_report        Slack daily P&L report (complete data)
+  07:05        all_brands_summary    Slack all-store EUR summary table
+  08:00 Mon    weekly_report         Slack weekly P&L recap (Mondays only)
+  */30         read_invoices         Poll #supplier-invoices, GPT-4o extraction
+  21:00        eod_report            WhatsApp EOD summary
 
 Every job is logged to agent_runs. Failures send a Slack alert to
 SLACK_ALERTS_CHANNEL (falls back to SLACK_CHANNEL_ID).
@@ -177,6 +178,14 @@ def main() -> None:
         args=["reconcile"],
         id="reconcile",
         name="Nightly sheet-vs-DB reconciliation (00:00)",
+    )
+
+    scheduler.add_job(
+        _execute,
+        CronTrigger(hour=6, minute=35, timezone=TIMEZONE),
+        args=["fetch_exchange_rates"],
+        id="fetch_exchange_rates",
+        name="Fetch daily USD/EUR FX rates → exchange_rates table (06:35)",
     )
 
     scheduler.add_job(

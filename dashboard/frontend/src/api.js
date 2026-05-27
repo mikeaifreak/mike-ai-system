@@ -37,12 +37,18 @@ export async function login(username, password) {
   return res.json()
 }
 
-export function getTodayMetrics() {
-  return apiFetch('/metrics/today')
+export function getTodayMetrics(storeId = null) {
+  const q = storeId ? `?store_id=${encodeURIComponent(storeId)}` : ''
+  return apiFetch(`/metrics/today${q}`)
 }
 
-export function getChartData(days = 30) {
-  return apiFetch(`/metrics/chart?days=${days}`)
+export function getChartData(days = 30, storeId = null) {
+  const q = storeId ? `&store_id=${encodeURIComponent(storeId)}` : ''
+  return apiFetch(`/metrics/chart?days=${days}${q}`)
+}
+
+export function getStores() {
+  return apiFetch('/stores/list')
 }
 
 export function getAgentStatus() {

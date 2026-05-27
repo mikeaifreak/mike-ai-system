@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import auth
-from routes import agents, alerts, chat, finance, metrics, reports
+from routes import agents, alerts, chat, finance, metrics, reports, stores
 
 app = FastAPI(title="Mike AI Mission Control")
 
@@ -23,6 +23,7 @@ app.include_router(alerts.router)
 app.include_router(finance.router)
 app.include_router(reports.router)
 app.include_router(chat.router)
+app.include_router(stores.router)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────

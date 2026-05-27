@@ -321,3 +321,87 @@ CREATE TABLE IF NOT EXISTS slack_sync_state (
     last_ts     VARCHAR(50),   -- Slack message timestamp string e.g. "1716800000.123456"
     updated_at  TIMESTAMPTZ  DEFAULT NOW()
 );
+
+-- ---------------------------------------------------------------------------
+-- Stores — master config per Shopify store (multi-currency, multi-store)
+--
+-- One row per store. All agents read from this table to resolve credentials,
+-- URLs, and the native currency for each store.
+--
+-- Currency rules:
+--   USD stores → revenue_eur / profit_eur in daily_pl computed via exchange_rates
+--   EUR stores → revenue_eur / profit_eur = revenue / profit (no conversion needed)
+--
+-- The "default" store is seeded automatically so single-store setups work
+-- without any manual INSERT.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stores (
+    id                      UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    store_id                VARCHAR(100) UNIQUE NOT NULL,
+    display_name            VARCHAR(100) NOT NULL DEFAULT '',
+    currency                VARCHAR(3)   NOT NULL DEFAULT 'USD',
+    shopify_url             VARCHAR(255),
+    google_script_url       TEXT,
+    google_ads_sheet_url    TEXT,
+    pinterest_ads_sheet_url TEXT,
+    slack_channel_id        VARCHAR(50),
+    is_active               BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at              TIMESTAMPTZ  DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ  DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_stores_store_id ON stores (store_id);
+
+-- Seed the default store (idempotent)
+INSERT INTO stores (store_id, display_name, currency)
+VALUES ('default', 'FRUGAZE', 'USD')
+ON CONFLICT (store_id) DO NOTHING;
+
+-- ---------------------------------------------------------------------------
+-- Migration: add currency + EUR conversion columns to daily_pl
+-- (idempotent — safe to run on existing installations)
+-- ---------------------------------------------------------------------------
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'daily_pl' AND column_name = 'currency'
+    ) THEN
+        ALTER TABLE daily_pl ADD COLUMN currency VARCHAR(3) DEFAULT 'USD';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'daily_pl' AND column_name = 'revenue_eur'
+    ) THEN
+        ALTER TABLE daily_pl ADD COLUMN revenue_eur NUMERIC(12,2);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'daily_pl' AND column_name = 'profit_eur'
+    ) THEN
+        ALTER TABLE daily_pl ADD COLUMN profit_eur NUMERIC(12,2);
+    END IF;
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- Exchange rates — daily FX cache (fetched from exchangerate-api.com)
+--
+-- Populated by currency_converter.fetch_and_cache_today_rates() at 06:35
+-- before all other pipeline pulls. pl_processor.py reads from this table
+-- to compute revenue_eur / profit_eur in daily_pl.
+--
+-- If the API is unavailable, the most-recent cached rate is used.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS exchange_rates (
+    id            UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    rate_date     DATE         NOT NULL,
+    from_currency VARCHAR(3)   NOT NULL,
+    to_currency   VARCHAR(3)   NOT NULL,
+    rate          NUMERIC(10,6) NOT NULL,
+    fetched_at    TIMESTAMPTZ  DEFAULT NOW(),
+    UNIQUE (rate_date, from_currency, to_currency)
+);
+
+CREATE INDEX IF NOT EXISTS idx_exchange_rates_date ON exchange_rates (rate_date DESC);

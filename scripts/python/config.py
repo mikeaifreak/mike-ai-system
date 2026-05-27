@@ -184,6 +184,12 @@ PINTEREST_ADS_STORE_SHEET_URLS: dict = _parse_ads_sheet_urls(
 )
 
 # ---------------------------------------------------------------------------
+# Currency / FX
+# ---------------------------------------------------------------------------
+# Free API key from https://www.exchangerate-api.com/ (1,500 requests/month)
+EXCHANGE_RATE_API_KEY: str = os.getenv("EXCHANGE_RATE_API_KEY", "")
+
+# ---------------------------------------------------------------------------
 # Anomaly thresholds (override via env if needed)
 # ---------------------------------------------------------------------------
 THRESHOLD_ROAS_LOW:        float = float(os.getenv("THRESHOLD_ROAS_LOW",     "1.5"))

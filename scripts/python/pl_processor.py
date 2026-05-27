@@ -11,6 +11,7 @@ import psycopg2
 import psycopg2.extras
 
 import config
+from currency_converter import get_daily_rate
 
 logger = logging.getLogger(__name__)
 
@@ -26,13 +27,15 @@ INSERT INTO daily_pl (
     adspend_google, adspend_pinterest,
     mediabuying, employee_cost, transaction_fee,
     profit, roas, profit_pct, cog_pct, cvr_pct, cpc,
-    refunds, refund_pct, source, synced_at
+    refunds, refund_pct, source, synced_at,
+    currency, revenue_eur, profit_eur
 ) VALUES (
     %(store_id)s, %(report_date)s, %(revenue)s, %(cog)s,
     %(adspend_google)s, %(adspend_pinterest)s,
     %(mediabuying)s, %(employee_cost)s, %(transaction_fee)s,
     %(profit)s, %(roas)s, %(profit_pct)s, %(cog_pct)s, %(cvr_pct)s, %(cpc)s,
-    %(refunds)s, %(refund_pct)s, %(source)s, NOW()
+    %(refunds)s, %(refund_pct)s, %(source)s, NOW(),
+    %(currency)s, %(revenue_eur)s, %(profit_eur)s
 )
 ON CONFLICT (store_id, report_date) DO UPDATE SET
     revenue            = EXCLUDED.revenue,
@@ -54,9 +57,41 @@ ON CONFLICT (store_id, report_date) DO UPDATE SET
     refund_pct         = EXCLUDED.refund_pct,
     source             = EXCLUDED.source,
     synced_at          = NOW(),
-    updated_at         = NOW()
+    updated_at         = NOW(),
+    currency           = EXCLUDED.currency,
+    revenue_eur        = EXCLUDED.revenue_eur,
+    profit_eur         = EXCLUDED.profit_eur
 RETURNING (xmax = 0) AS inserted;
 """
+
+
+def _compute_eur_values(
+    row: dict,
+    report_date,
+    currency: str,
+) -> tuple[float | None, float | None]:
+    """
+    Return (revenue_eur, profit_eur) for the given row.
+
+    - EUR store : revenue_eur = revenue, profit_eur = profit  (no conversion)
+    - USD store : multiply by today's USD→EUR rate from exchange_rates cache
+    - Other     : same as USD logic; rate lookup handles unknown pairs gracefully
+    """
+    revenue = row.get("revenue")
+    profit  = row.get("profit")
+
+    if currency == "EUR":
+        return (
+            round(float(revenue), 2) if revenue is not None else None,
+            round(float(profit),  2) if profit  is not None else None,
+        )
+
+    # Fetch from cache (already populated by fetch_exchange_rates at 06:35)
+    rate = get_daily_rate(currency, "EUR", report_date)
+
+    rev_eur    = round(float(revenue) * rate, 2) if revenue is not None else None
+    profit_eur = round(float(profit)  * rate, 2) if profit  is not None else None
+    return rev_eur, profit_eur
 
 
 def _detect_anomalies(row: dict) -> list[dict]:
@@ -245,6 +280,15 @@ def process_and_store(rows: list[dict], store_id: str = "default") -> dict:
 
                     # Only process rows within the reprocessing window or newer
                     # (older historical rows are still inserted on first sync)
+                    # Currency: prefer value from row (set by sheets_parser),
+                    # fall back to 'USD'. Row currency comes from the sheet's
+                    # "Store Currency" metadata row detected by google-apps-script.js.
+                    row_currency = str(row.get("currency") or "USD").upper()
+
+                    rev_eur, profit_eur = _compute_eur_values(
+                        row, rdate, row_currency
+                    )
+
                     params = {
                         "store_id":           store_id,
                         "report_date":        rdate,
@@ -264,6 +308,9 @@ def process_and_store(rows: list[dict], store_id: str = "default") -> dict:
                         "refunds":            row.get("refunds"),
                         "refund_pct":         row.get("refund_pct"),
                         "source":             "google_sheets",
+                        "currency":           row_currency,
+                        "revenue_eur":        rev_eur,
+                        "profit_eur":         profit_eur,
                     }
 
                     cur.execute(UPSERT_SQL, params)

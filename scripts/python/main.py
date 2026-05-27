@@ -46,6 +46,7 @@ from slack_reporter import (
     send_all_brands_summary,
 )
 import slack_invoice_reader
+import currency_converter
 from whatsapp_alerts import send_eod_summary
 from google_ads_puller import pull_all_stores as _pull_google_ads_stores
 from pinterest_ads_puller import pull_all_stores as _pull_pinterest_ads_stores
@@ -144,6 +145,14 @@ def run_sync_only() -> None:
     _sync_sheets_to_db()
 
 
+def run_fetch_exchange_rates() -> None:
+    """Fetch and cache today's FX rates (USD→EUR etc.) before all other pulls."""
+    logger.info(">>> MODE: fetch_exchange_rates")
+    rates = currency_converter.fetch_and_cache_today_rates()
+    for pair, rate in rates.items():
+        logger.info("  %s = %.6f", pair, rate)
+
+
 def run_all_brands_summary() -> None:
     """Send all-brands/stores P&L summary table to Slack (#finance channel)."""
     logger.info(">>> MODE: all_brands_summary")
@@ -233,6 +242,7 @@ def run_reconcile() -> None:
 # ---------------------------------------------------------------------------
 
 MODES = {
+    "fetch_exchange_rates": run_fetch_exchange_rates,
     "pull_shopify":         run_pull_shopify,
     "pull_google_ads":      run_pull_google_ads,
     "pull_pinterest_ads":   run_pull_pinterest_ads,
