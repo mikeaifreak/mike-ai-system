@@ -73,6 +73,47 @@ export function getMonthly() {
   return apiFetch('/reports/monthly')
 }
 
+export async function sendAgentChatStream(agentName, message, onChunk, onDone) {
+  const res = await fetch(`${BASE}/chat/agent`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    },
+    body: JSON.stringify({ agent_name: agentName, message })
+  })
+
+  if (!res.ok) {
+    throw new Error('Agent chat request failed')
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    const chunk = decoder.decode(value, { stream: true })
+    const lines = chunk.split('\n')
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        const data = line.slice(6) // no trim — preserve newlines in command output
+        if (data.trim() === '[DONE]') {
+          onDone()
+          return
+        }
+        if (data) {
+          onChunk(data)
+        }
+      }
+    }
+  }
+
+  onDone()
+}
+
 export async function sendNovaChatStream(message, onChunk, onDone) {
   const res = await fetch(`${BASE}/chat`, {
     method: 'POST',

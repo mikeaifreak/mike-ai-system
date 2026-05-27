@@ -1,5 +1,5 @@
 import React from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { getToken } from './api'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
@@ -13,6 +13,14 @@ function RequireAuth({ children }) {
     return <Navigate to="/login" replace />
   }
   return children
+}
+
+// Hidden on /mission-control — the Agent Chat Panel replaces it there
+function ConditionalNova() {
+  const location = useLocation()
+  if (!getToken()) return null
+  if (location.pathname === '/mission-control') return null
+  return <NovaChat />
 }
 
 export default function App() {
@@ -54,7 +62,7 @@ export default function App() {
         />
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
       </Routes>
-      {getToken() && <NovaChat />}
+      <ConditionalNova />
     </BrowserRouter>
   )
 }
